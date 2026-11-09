@@ -1,0 +1,20 @@
+# Configuration Doxygen du projet (cible "make doc").
+# Seules les options differentes des valeurs par defaut sont indiquees.
+# Les contrats (@pre, @post) des fichiers .h apparaissent dans les sections
+# "Precondition" et "Postcondition" de chaque fonction.
+
+PROJECT_NAME           = "Generateur de texte par chaine de Markov"
+PROJECT_BRIEF          = "Chaine de Markov, table de hachage, lexique d'affichage"
+OUTPUT_DIRECTORY       = doc
+OUTPUT_LANGUAGE        = French
+INPUT                  = README.md src main.c
+FILE_PATTERNS          = *.h *.c
+EXCLUDE                = src/main.c
+USE_MDFILE_AS_MAINPAGE = README.md
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+SOURCE_BROWSER         = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO

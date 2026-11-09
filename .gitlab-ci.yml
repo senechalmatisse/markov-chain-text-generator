@@ -1,0 +1,58 @@
+# Integration continue GitLab du projet Markov.
+#
+# Le pipeline echoue (et le commit n'est donc pas valide) si :
+#   - le projet ne compile pas ;
+#   - un test echoue : tests unitaires, programme principal, defaillances
+#     d'allocation, test aleatoire sous AddressSanitizer ;
+#   - valgrind detecte la moindre fuite ou erreur memoire dans le programme
+#     final ou dans un test ("make test" execute la cible test_memoire).
+# La couverture des tests et la documentation sont produites en plus.
+
+image: gcc:latest
+
+stages:
+  - compilation
+  - tests
+  - rapports
+
+compilation:
+  stage: compilation
+  script:
+    - make clean
+    - make all
+  artifacts:
+    paths:
+      - projet
+    expire_in: 1 week
+
+tests_unitaires_et_memoire:
+  stage: tests
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq valgrind > /dev/null
+  script:
+    - make clean
+    - make test
+
+couverture:
+  stage: rapports
+  script:
+    - make clean
+    - make couverture
+  coverage: '/Couverture totale des lignes : (\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - couverture/
+    expire_in: 1 week
+
+documentation:
+  stage: rapports
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq doxygen > /dev/null
+  script:
+    - make doc
+  artifacts:
+    paths:
+      - doc/html/
+    expire_in: 1 week

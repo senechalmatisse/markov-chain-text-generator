@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# $Author$
+#
+# $RCSfile$
+#
+# $Date$
+#
+# $Revision$
+#
+# FONCTION : Refus du commit si les tests unitaires ou la verification
+#            memoire echouent : lancement de "make test" sur une copie du
+#            contenu indexe, c'est-a-dire exactement ce qui va etre valide
+#
+# PARAMETRES : Ce programme ne prend aucun parametre (il est lance par git)
+#
+# Installation   : make installer_hook (depuis le repertoire du projet)
+# Contournement  : git commit --no-verify
+#
+
+# Repertoire du projet (parent du repertoire du hook) et racine du depot
+V_Vc_Projet="$(cd "$(dirname "$0")/.." && pwd)"
+V_Vc_Racine="$(git rev-parse --show-toplevel)"
+V_Vc_Sous_Repertoire="${V_Vc_Projet#"${V_Vc_Racine}"}"
+V_Vc_Copie="$(mktemp -d)"
+V_Vc_Journal="${V_Vc_Copie}.log"
+
+# Copie du contenu indexe, puis tests sur cette copie
+git checkout-index --all --prefix="${V_Vc_Copie}/"
+V_N_Code_Retour="$?"
+if [ "${V_N_Code_Retour}" -eq "0" ]; then
+  echo "pre-commit : make test sur le contenu indexe (environ 2 minutes)..."
+  make -C "${V_Vc_Copie}${V_Vc_Sous_Repertoire}" test > "${V_Vc_Journal}" 2>&1
+  V_N_Code_Retour="$?"
+fi
+
+if [ "${V_N_Code_Retour}" -ne "0" ]; then
+  echo "pre-commit : ECHEC de make test, commit refuse. Fin du journal :"
+  tail -n 30 "${V_Vc_Journal}"
+  echo "pre-commit : journal complet dans ${V_Vc_Journal}"
+else
+  echo "pre-commit : tests et verification memoire reussis."
+  rm -f "${V_Vc_Journal}"
+fi
+
+rm -rf "${V_Vc_Copie}"
+exit "${V_N_Code_Retour}"
