@@ -94,7 +94,7 @@ Il retient enfin la ponctuation qui termine les phrases selon leur dernier mot.
 ```
  dataset/*.txt
       │
-          ▼
+      ▼
  itérateur de mots ............ mots {a..z}, graphies, liaisons, ponctuation
  (repertoire)                   en-têtes et licences Gutenberg ignorés
       │
@@ -104,7 +104,7 @@ Il retient enfin la ponctuation qui termine les phrases selon leur dernier mot.
       ├──► chaîne de Markov ....... quel mot suit             (markov)
       └──► chaîne de ponctuation .. comment finir la phrase   (markov)
                        │
-                                      ▼
+                       ▼
                     modèle ──► phrases ──► fichier texte    (modele, sauvegarde)
                        │
                        └──► modele.txt : sauvegarde et rechargement
