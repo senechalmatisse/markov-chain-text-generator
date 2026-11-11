@@ -38,7 +38,20 @@ static void observer(lexique_t *l, unsigned int bigramme, const char *graphie,
   unsigned int i;
 
   for (i = 0u; i < n; i++) {
-    assert(lexique_observer(l, bigramme, graphie, accentue, debut, liaison));
+    assert(lexique_observer(l, bigramme, graphie, accentue, debut, liaison, MARQUE_AUCUNE));
+  }
+}
+
+/** Observe n fois une graphie precedee de marques de dialogue. */
+static void observer_marques(lexique_t *l, unsigned int bigramme,
+                             const char *graphie, bool debut,
+                             liaison_t liaison, unsigned int marques,
+                             unsigned int n)
+{
+  unsigned int i;
+
+  for (i = 0u; i < n; i++) {
+    assert(lexique_observer(l, bigramme, graphie, false, debut, liaison, marques));
   }
 }
 
@@ -286,6 +299,66 @@ static void test_liaisons(void)
   assert(lexique_liaison(l, 2u) == LIAISON_ESPACE);     /* pas de vote */
   assert(lexique_liaison(l, 3u) == LIAISON_VIRGULE);
   assert(lexique_liaison(l, 0u) == LIAISON_ESPACE);
+  /* sans marque observee : aucune marque */
+  assert(lexique_marques(l, 1u) == MARQUE_AUCUNE);
+  assert(lexique_marques(l, 0u) == MARQUE_AUCUNE);
+  lexique_detruire(&l);
+}
+
+static void test_separateur_valide(void)
+{
+  unsigned int liaison;
+  unsigned int marques;
+
+  for (liaison = 0u; liaison < (unsigned int)NB_LIAISONS; liaison++) {
+    assert(lexique_separateur_valide((liaison_t)liaison, MARQUE_AUCUNE));
+    for (marques = 1u; marques <= MARQUES_TOUTES; marques++) {
+      /* une apostrophe ou un trait d'union est seul entre deux mots */
+      assert(lexique_separateur_valide((liaison_t)liaison, marques)
+             == (liaison != (unsigned int)LIAISON_APOSTROPHE
+                 && liaison != (unsigned int)LIAISON_TRAIT_UNION));
+    }
+    assert(!lexique_separateur_valide((liaison_t)liaison, MARQUES_TOUTES + 1u));
+  }
+  assert(!lexique_separateur_valide(NB_LIAISONS, MARQUE_AUCUNE));
+}
+
+static void test_marques_de_dialogue(void)
+{
+  lexique_t *l = lexique_avec_mots(6u);
+
+  /* bigramme 1 : "dit: <<Viens" 2 fois, "dit viens" 1 fois */
+  observer_marques(l, 1u, "viens", false, LIAISON_DEUX_POINTS, MARQUE_OUVRE_GUILLEMET, 2u);
+  observer_marques(l, 1u, "viens", false, LIAISON_ESPACE, MARQUE_AUCUNE, 1u);
+  /* bigramme 2 : liaison et marques votent ENSEMBLE : (virgule, ferme)
+     2 fois, (virgule, aucune) 1 fois, (espace, ferme) 1 fois */
+  observer_marques(l, 2u, "dit", false, LIAISON_VIRGULE, MARQUE_FERME_GUILLEMET, 2u);
+  observer_marques(l, 2u, "dit", false, LIAISON_VIRGULE, MARQUE_AUCUNE, 1u);
+  observer_marques(l, 2u, "dit", false, LIAISON_ESPACE, MARQUE_FERME_GUILLEMET, 1u);
+  /* bigramme 3 : debut de phrase, tiret de dialogue majoritaire ; la
+     liaison est ignoree, le guillemet fermant aussi */
+  observer_marques(l, 3u, "oui", true, LIAISON_VIRGULE, MARQUE_TIRET | MARQUE_FERME_GUILLEMET, 3u);
+  observer_marques(l, 3u, "oui", true, LIAISON_ESPACE, MARQUE_AUCUNE, 2u);
+  /* bigramme 4 : debut de phrase, sans tiret le plus souvent */
+  observer_marques(l, 4u, "il", true, LIAISON_ESPACE, MARQUE_TIRET, 1u);
+  observer_marques(l, 4u, "il", true, LIAISON_ESPACE, MARQUE_AUCUNE, 5u);
+  /* bigramme 5 : toutes les marques a la fois */
+  observer_marques(l, 5u, "non", false, LIAISON_POINT_VIRGULE, MARQUES_TOUTES, 1u);
+  lexique_finaliser(l);
+
+  assert(lexique_liaison(l, 1u) == LIAISON_DEUX_POINTS);
+  assert(lexique_marques(l, 1u) == MARQUE_OUVRE_GUILLEMET);
+  assert(lexique_liaison(l, 2u) == LIAISON_VIRGULE);
+  assert(lexique_marques(l, 2u) == MARQUE_FERME_GUILLEMET);
+  assert(lexique_liaison(l, 3u) == LIAISON_ESPACE);
+  assert(lexique_marques(l, 3u) == MARQUE_TIRET);
+  assert(lexique_liaison(l, 4u) == LIAISON_ESPACE);
+  assert(lexique_marques(l, 4u) == MARQUE_AUCUNE);
+  assert(lexique_liaison(l, 5u) == LIAISON_POINT_VIRGULE);
+  assert(lexique_marques(l, 5u) == MARQUES_TOUTES);
+  /* les marques n'influencent ni la variante ni la casse */
+  verifier_ecriture(l, 3u, true, "Oui");
+  verifier_ecriture(l, 1u, false, "viens");
   lexique_detruire(&l);
 }
 
@@ -335,6 +408,34 @@ static void test_ecrire(void)
   lexique_detruire(&l);
 }
 
+static void test_ecrire_mot(void)
+{
+  /* graphie d'un mot hors contexte : choix du mot, pas ceux du bigramme */
+  lexique_t *l = lexique_avec_mots(3u);
+  char petit[4] = "xyz";
+  char tampon[16];
+
+  /* mot 1 : "a" le plus souvent, mais accentue et capitale dans le
+     contexte du bigramme 1 */
+  assert(lexique_ajouter_bigramme(l, 1u) == 3u);
+  observer(l, 3u, "a", true, false, LIAISON_ESPACE, 5u);
+  observer(l, 1u, "\xC3\x80", true, false, LIAISON_ESPACE, 2u);
+  observer(l, 2u, "ONU", true, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  verifier_ecriture(l, 1u, false, "\xC3\x80");
+  assert(lexique_ecrire_mot(l, 1u, false, tampon, sizeof(tampon)) == 1u);
+  assert(strcmp(tampon, "a") == 0);
+  assert(lexique_ecrire_mot(l, 1u, true, tampon, sizeof(tampon)) == 1u);
+  assert(strcmp(tampon, "A") == 0);
+  assert(lexique_ecrire_mot(l, 2u, false, tampon, sizeof(tampon)) == 3u);
+  assert(strcmp(tampon, "ONU") == 0);
+  /* comme snprintf : rien n'est ecrit si le tampon est trop petit */
+  assert(lexique_ecrire_mot(l, 2u, false, NULL, 0u) == 3u);
+  assert(lexique_ecrire_mot(l, 2u, true, petit, 3u) == 3u);
+  assert(strcmp(petit, "xyz") == 0);
+  lexique_detruire(&l);
+}
+
 static void test_fixer(void)
 {
   lexique_t *l = lexique_avec_mots(2u);
@@ -346,10 +447,14 @@ static void test_fixer(void)
   assert(lexique_variante_mot(l, 1u) == 1u);
   assert(lexique_casse_mot(l, 1u) == CASSE_MAJUSCULE);
   verifier_ecriture(l, 1u, false, "\xC3\x89T\xC3\x89");
-  lexique_fixer_bigramme(l, 1u, 0u, CASSE_MINUSCULE, LIAISON_TRAIT_UNION);
+  lexique_fixer_bigramme(l, 1u, 0u, CASSE_MINUSCULE, LIAISON_TRAIT_UNION, MARQUE_AUCUNE);
   verifier_ecriture(l, 1u, false, "ete");
   assert(lexique_liaison(l, 1u) == LIAISON_TRAIT_UNION);
-  lexique_fixer_bigramme(l, 1u, LEXIQUE_AUCUNE, LEXIQUE_AUCUNE, LIAISON_ESPACE);
+  assert(lexique_marques(l, 1u) == MARQUE_AUCUNE);
+  lexique_fixer_bigramme(l, 1u, LEXIQUE_AUCUNE, LEXIQUE_AUCUNE, LIAISON_VIRGULE,
+                         MARQUE_TIRET | MARQUE_OUVRE_GUILLEMET);
+  assert(lexique_liaison(l, 1u) == LIAISON_VIRGULE);
+  assert(lexique_marques(l, 1u) == (MARQUE_TIRET | MARQUE_OUVRE_GUILLEMET));
   assert(lexique_casse_bigramme(l, 1u) == LEXIQUE_AUCUNE);
   verifier_ecriture(l, 1u, false, "\xC3\x89T\xC3\x89");
   lexique_detruire(&l);
@@ -370,14 +475,14 @@ static void violation_observer_apres_finalisation(void)
   lexique_t *l = lexique_avec_mots(2u);
 
   lexique_finaliser(l);
-  lexique_observer(l, 1u, "mot", false, false, LIAISON_ESPACE);
+  lexique_observer(l, 1u, "mot", false, false, LIAISON_ESPACE, MARQUE_AUCUNE);
 }
 
 static void violation_graphie_invalide(void)
 {
   lexique_t *l = lexique_avec_mots(2u);
 
-  lexique_observer(l, 1u, "l'eau", false, false, LIAISON_ESPACE);
+  lexique_observer(l, 1u, "l'eau", false, false, LIAISON_ESPACE, MARQUE_AUCUNE);
 }
 
 static void violation_variante_majuscule(void)
@@ -425,7 +530,50 @@ static void violation_liaison_invalide(void)
 {
   lexique_t *l = lexique_avec_mots(2u);
 
-  lexique_observer(l, 1u, "mot", false, false, NB_LIAISONS);
+  lexique_observer(l, 1u, "mot", false, false, NB_LIAISONS, MARQUE_AUCUNE);
+}
+
+static void violation_marques_invalides(void)
+{
+  lexique_t *l = lexique_avec_mots(2u);
+
+  lexique_observer(l, 1u, "mot", false, false, LIAISON_ESPACE, MARQUES_TOUTES + 1u);
+}
+
+static void violation_apostrophe_avec_marque(void)
+{
+  lexique_t *l = lexique_avec_mots(2u);
+
+  lexique_observer(l, 1u, "mot", false, false, LIAISON_APOSTROPHE, MARQUE_TIRET);
+}
+
+static void violation_fixer_separateur_invalide(void)
+{
+  lexique_t *l = lexique_avec_mots(2u);
+
+  observer(l, 1u, "mot", false, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  lexique_fixer_bigramme(l, 1u, LEXIQUE_AUCUNE, LEXIQUE_AUCUNE,
+                         LIAISON_TRAIT_UNION, MARQUE_OUVRE_GUILLEMET);
+}
+
+static void violation_ecrire_mot_inexistant(void)
+{
+  lexique_t *l = lexique_avec_mots(2u);
+  char tampon[8];
+
+  observer(l, 1u, "mot", false, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  lexique_ecrire_mot(l, 2u, false, tampon, sizeof(tampon));
+}
+
+static void violation_ecrire_mot_vide(void)
+{
+  lexique_t *l = lexique_avec_mots(2u);
+  char tampon[8];
+
+  lexique_finaliser(l);
+  lexique_ecrire_mot(l, 0u, false, tampon, sizeof(tampon));  /* 0 variante */
 }
 
 static void sans_violation(void)
@@ -450,6 +598,11 @@ static void test_contrats(void)
   assert(viole_contrat(violation_ecrire_mot_sans_variante));
   assert(viole_contrat(violation_fixer_variante_inexistante));
   assert(viole_contrat(violation_liaison_invalide));
+  assert(viole_contrat(violation_marques_invalides));
+  assert(viole_contrat(violation_apostrophe_avec_marque));
+  assert(viole_contrat(violation_fixer_separateur_invalide));
+  assert(viole_contrat(violation_ecrire_mot_inexistant));
+  assert(viole_contrat(violation_ecrire_mot_vide));
 }
 
 
@@ -467,8 +620,11 @@ int main(void)
   LANCER_TEST(test_casse_hors_debut_de_phrase);
   LANCER_TEST(test_choix_selon_le_contexte);
   LANCER_TEST(test_liaisons);
+  LANCER_TEST(test_separateur_valide);
+  LANCER_TEST(test_marques_de_dialogue);
   LANCER_TEST(test_vote_majoritaire);
   LANCER_TEST(test_ecrire);
+  LANCER_TEST(test_ecrire_mot);
   LANCER_TEST(test_fixer);
   LANCER_TEST(test_contrats);
   afficher_bilan("lexique");

@@ -29,6 +29,7 @@ N-ieme (echecs persistants). A chaque fois on verifie :
 #include "../src/hachage.h"
 #include "../src/markov.h"
 #include "../src/lexique.h"
+#include "../src/langue.h"
 #include "../src/repertoire.h"
 #include "../src/sauvegarde.h"
 #include "../src/modele.h"
@@ -182,8 +183,26 @@ static void rejouer(void (*scenario)(void))
 static char *corpus = NULL;
 static char *chemin_texte = NULL;
 static char *chemin_modele = NULL;
+static char *chemin_modele_3 = NULL;
 static char *chemin_sortie = NULL;
 static modele_t *modele = NULL;
+static modele_t *modele_3 = NULL;
+
+/** Corpus du filtre de langue : deux textes francais, un texte anglais. */
+static char *corpus_langues = NULL;
+static char *chemin_anglais = NULL;
+
+/** Textes courants pour le filtre de langue. */
+static const char TEXTE_FRANCAIS[] =
+  "Le chat dort sur le toit de la maison. Il regarde les oiseaux qui "
+  "passent dans le ciel. La petite fille ouvre la porte et appelle son "
+  "chat. Elle ne veut pas qu'il reste dehors pendant la nuit. Le chat "
+  "descend du toit et vient pres d'elle. Ils rentrent tous les deux dans "
+  "la cuisine. La mere a prepare une soupe pour le repas du soir.\n";
+static const char TEXTE_ANGLAIS[] =
+  "The old man walked to the river with his dog. He had not seen the water "
+  "for many years. It was cold and the wind was strong. She said that they "
+  "would come back in the morning. There was a small house on the hill.\n";
 
 /** Mot tres long (plus grand qu'un bloc de stockage). */
 static char mot_long[70001];
@@ -392,7 +411,10 @@ static void scenario_lexique(void)
                                               (i == 77u) ? longue
                                               : GRAPHIES[i % 6u],
                                               i % 2u == 0u, i % 5u == 0u,
-                                              LIAISON_VIRGULE));
+                                              LIAISON_VIRGULE,
+                                              (i % 3u == 0u)
+                                              ? MARQUE_TIRET
+                                              : MARQUE_AUCUNE));
         if (!observe) {
           /* echec : ni nouvelle variante, ni variante modifiee */
           assert(errno == ENOMEM);
@@ -428,8 +450,7 @@ static void scenario_iterateur(void)
       nb_mots += (mot != NULL) ? 1u : 0u;
     } while (mot != NULL);
     /* fin normale (tous les mots lus) ou erreur ENOMEM signalee */
-    assert(iterateur_mots_erreur(it) == ENOMEM
-           || (iterateur_mots_erreur(it) == 0 && nb_mots == 7u));
+    assert(iterateur_mots_erreur(it) == ENOMEM || (iterateur_mots_erreur(it) == 0 && nb_mots == 7u));
     iterateur_mots_detruire(&it);
   }
 }
@@ -534,6 +555,228 @@ static void scenario_charger(void)
 }
 
 
+static void scenario_table_des_nuplets(void)
+{
+  hachage_nuplets_t *t = NULL;
+  unsigned int elements[3];
+  unsigned int i;
+  unsigned int j;
+  unsigned int identifiant;
+  bool arret = false;
+
+  SURVEILLER(t = hachage_nuplets_creer(3u, 0u));
+  if (t == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    for (i = 0u; !arret && i < 2000u; i++) {
+      elements[0] = i / 100u;
+      elements[1] = (i / 10u) % 10u;
+      elements[2] = i % 10u;
+      SURVEILLER(identifiant = hachage_nuplets_ajouter(t, elements));
+      if (identifiant == HACHAGE_ABSENT) {
+        /* echec : memes n-uplets, memes identifiants */
+        assert(errno == ENOMEM);
+        assert(hachage_nuplets_nb(t) == i);
+        assert(hachage_nuplets_identifiant(t, elements) == HACHAGE_ABSENT);
+        for (j = 0u; j < i; j++) {
+          elements[0] = j / 100u;
+          elements[1] = (j / 10u) % 10u;
+          elements[2] = j % 10u;
+          assert(hachage_nuplets_identifiant(t, elements) == j);
+          assert(hachage_nuplets_element(t, j, 2u) == j % 10u);
+        }
+        arret = true;
+      } else {
+        assert(identifiant == i);
+      }
+    }
+    hachage_nuplets_detruire(&t);
+  }
+}
+
+/** Mots (sur {a..z}) donnes au detecteur de langue, un point = fin de phrase. */
+static const char *const MOTS_LANGUES[] = {
+  "le", "chat", "dort", "sur", "le", "toit", "de", "la", "maison", ".",
+  "il", "regarde", "les", "oiseaux", "qui", "passent", "dans", "le", "ciel",
+  ".", "the", "old", "man", "walked", "to", "the", "river", "with", "his",
+  "dog", ".", "he", "had", "not", "seen", "the", "water", "for", "many",
+  "years", ".", "la", "petite", "fille", "ouvre", "la", "porte", "et",
+  "appelle", "son", "chat", ".", "elle", "ne", "veut", "pas", "qu", "il",
+  "reste", "dehors", "pendant", "la", "nuit", "."
+};
+
+static void scenario_langue(void)
+{
+  const size_t nb = sizeof(MOTS_LANGUES) / sizeof(MOTS_LANGUES[0]);
+  langue_detecteur_t *d = NULL;
+  size_t nb_mots_texte = 0u;
+  size_t i;
+  size_t r;
+  size_t nb_mots_avant;
+  size_t nb_phrases_avant;
+  bool succes = true;
+  bool fin;
+
+  for (i = 0u; i < nb; i++) {
+    nb_mots_texte += (MOTS_LANGUES[i][0] != '.') ? 1u : 0u;
+  }
+  SURVEILLER(d = langue_detecteur_creer());
+  if (d == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    /* le texte est donne trois fois (trois textes) : agrandissements */
+    for (r = 0u; succes && r < 3u; r++) {
+      for (i = 0u; succes && i < nb; i++) {
+        if (MOTS_LANGUES[i][0] != '.') {
+          fin = (i + 1u < nb && MOTS_LANGUES[i + 1u][0] == '.');
+          nb_mots_avant = langue_detecteur_nb_mots(d);
+          nb_phrases_avant = langue_detecteur_nb_phrases(d);
+          SURVEILLER(succes = langue_detecteur_ajouter_mot(d, MOTS_LANGUES[i], fin));
+          if (!succes) {
+            /* echec : rien n'a change */
+            assert(errno == ENOMEM);
+            assert(langue_detecteur_nb_mots(d) == nb_mots_avant);
+            assert(langue_detecteur_nb_phrases(d) == nb_phrases_avant);
+          }
+        }
+      }
+      langue_detecteur_fin_texte(d);
+    }
+    if (succes) {
+      SURVEILLER(succes = langue_detecteur_conclure(d));
+      if (!succes) {
+        /* echec : pas de conclusion, et on peut recommencer */
+        assert(errno == ENOMEM);
+        assert(!langue_detecteur_est_conclu(d));
+        assert(langue_detecteur_nb_mots(d) == 3u * nb_mots_texte);
+        assert(langue_detecteur_conclure(d));
+      }
+      assert(langue_detecteur_majoritaire(d) == LANGUE_FRANCAIS);
+      assert(langue_detecteur_nb_phrases(d) == 3u * 6u);
+    }
+    langue_detecteur_detruire(&d);
+  }
+}
+
+static void scenario_liste_du_corpus(void)
+{
+  const char *chemins[2];
+  char **fichiers = NULL;
+  size_t nb = 0u;
+
+  chemins[0] = chemin_texte;
+  chemins[1] = corpus;
+  SURVEILLER(fichiers = repertoire_lister_corpus(chemins, 2u, true, &nb));
+  if (fichiers == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(nb == 3u);
+    assert(strcmp(fichiers[0], chemin_texte) == 0);
+    repertoire_liberer_fichiers(&fichiers, nb);
+  }
+}
+
+static void scenario_cle(void)
+{
+  char *cle = NULL;
+
+  SURVEILLER(cle = repertoire_cle("\xC3\x89t\xC3\xA9"));
+  if (cle == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(strcmp(cle, "ete") == 0);
+    free(cle);
+  }
+}
+
+static void scenario_modele_mot(void)
+{
+  unsigned int mot = 0u;
+
+  SURVEILLER(mot = modele_mot(modele, "\xC3\x89T\xC3\x89"));
+  if (mot == HACHAGE_ABSENT) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(strcmp(hachage_mot(modele_mots(modele), mot), "ete") == 0);
+  }
+}
+
+/**
+ * Apprentissage complet a l'ordre 3, avec toutes les options : corpus de
+ * deux chemins, filtre de langue, sous-repertoires, une phrase par ligne.
+ */
+static void scenario_apprendre_toutes_options(void)
+{
+  const repertoire_bilan_t temoin = { 7u, 7u, 7u, 7u, 7u, LANGUE_ALLEMAND };
+  repertoire_bilan_t bilan = temoin;
+  modele_options_t options = { 3u, true, true, true };
+  const char *chemins[2];
+  modele_t *m = NULL;
+  char *phrase;
+
+  chemins[0] = corpus_langues;
+  chemins[1] = chemin_anglais;
+  SURVEILLER(m = modele_apprendre_corpus(chemins, 2u, 3u, &options, &bilan));
+  if (m == NULL) {
+    /* echec : bilan inchange */
+    assert(errno == ENOMEM);
+    assert(bilan.nb_fichiers == temoin.nb_fichiers && bilan.langue == temoin.langue);
+  } else {
+    assert(bilan.nb_fichiers == 3u && bilan.langue == LANGUE_FRANCAIS);
+    assert(bilan.nb_phrases_ecartees == 5u);
+    assert(modele_mot(m, "river") == HACHAGE_ABSENT);
+    phrase = modele_generer_phrase(m);
+    assert(phrase != NULL);
+    free(phrase);
+    modele_detruire(&m);
+  }
+}
+
+static void scenario_apprendre_ordre_3(void)
+{
+  apprendre_modele(3u);
+}
+
+static void scenario_generer_phrase_depuis(void)
+{
+  unsigned int mots[3];
+  char *phrase = NULL;
+  unsigned int i;
+
+  /* un mot qui commence une phrase, un qui n'en commence pas (recherche
+     du contexte), et le meme encore (contexte memorise) */
+  mots[0] = modele_mot(modele_3, "oui");
+  mots[1] = modele_mot(modele_3, "dupont");
+  mots[2] = mots[1];
+  assert(mots[0] != HACHAGE_ABSENT && mots[1] != HACHAGE_ABSENT);
+  for (i = 0u; i < 3u; i++) {
+    SURVEILLER(phrase = modele_generer_phrase_depuis(modele_3, mots[i]));
+    if (phrase == NULL) {
+      assert(errno == ENOMEM);
+    }
+    free(phrase);
+  }
+  /* le modele reste utilisable */
+  phrase = modele_generer_phrase_depuis(modele_3, mots[1]);
+  assert(phrase != NULL && strncmp(phrase, "Dupont", 6u) == 0);
+  free(phrase);
+}
+
+static void scenario_charger_ordre_3(void)
+{
+  modele_t *m = NULL;
+
+  SURVEILLER(m = modele_charger(chemin_modele_3, 1u));
+  if (m == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(modele_ordre(m) == 3u);
+    assert(modele_nb_mots(m) == modele_nb_mots(modele_3));
+    modele_detruire(&m);
+  }
+}
+
+
 /* ======================================================================== */
 /*                                 Tests                                    */
 /* ======================================================================== */
@@ -598,6 +841,51 @@ static void test_charger(void)
   rejouer(scenario_charger);
 }
 
+static void test_table_des_nuplets(void)
+{
+  rejouer(scenario_table_des_nuplets);
+}
+
+static void test_langue(void)
+{
+  rejouer(scenario_langue);
+}
+
+static void test_liste_du_corpus(void)
+{
+  rejouer(scenario_liste_du_corpus);
+}
+
+static void test_cle(void)
+{
+  rejouer(scenario_cle);
+}
+
+static void test_modele_mot(void)
+{
+  rejouer(scenario_modele_mot);
+}
+
+static void test_apprendre_ordre_3(void)
+{
+  rejouer(scenario_apprendre_ordre_3);
+}
+
+static void test_apprendre_toutes_options(void)
+{
+  rejouer(scenario_apprendre_toutes_options);
+}
+
+static void test_generer_phrase_depuis(void)
+{
+  rejouer(scenario_generer_phrase_depuis);
+}
+
+static void test_charger_ordre_3(void)
+{
+  rejouer(scenario_charger_ordre_3);
+}
+
 int main(void)
 {
   static char texte_long[5100];
@@ -623,10 +911,20 @@ int main(void)
   chemin_texte = chemin_dans(autre, "texte.txt");
   ecrire_fichier(chemin_texte, texte_long);
   chemin_modele = chemin_dans(autre, "modele.sauvegarde");
+  chemin_modele_3 = chemin_dans(autre, "modele_3.sauvegarde");
   chemin_sortie = chemin_dans(autre, "sortie.sauvegarde");
   modele = modele_apprendre(corpus, 5u, 2u, true);
   assert(modele != NULL);
   assert(modele_sauvegarder(modele, chemin_modele));
+  modele_3 = modele_apprendre(corpus, 5u, 3u, true);
+  assert(modele_3 != NULL);
+  assert(modele_sauvegarder(modele_3, chemin_modele_3));
+  /* filtre de langue : deux textes francais, un anglais (5 phrases) */
+  corpus_langues = creer_repertoire_temporaire();
+  creer_fichier_dans(corpus_langues, "a.txt", TEXTE_FRANCAIS);
+  creer_fichier_dans(corpus_langues, "b.txt", TEXTE_FRANCAIS);
+  chemin_anglais = chemin_dans(autre, "anglais.txt");
+  ecrire_fichier(chemin_anglais, TEXTE_ANGLAIS);
   vivants_initiaux = blocs_vivants;
 
   printf("Tests des defaillances d'allocation :\n");
@@ -642,17 +940,30 @@ int main(void)
   LANCER_TEST(test_generer_phrase);
   LANCER_TEST(test_sauvegarder);
   LANCER_TEST(test_charger);
+  LANCER_TEST(test_table_des_nuplets);
+  LANCER_TEST(test_langue);
+  LANCER_TEST(test_liste_du_corpus);
+  LANCER_TEST(test_cle);
+  LANCER_TEST(test_modele_mot);
+  LANCER_TEST(test_apprendre_ordre_3);
+  LANCER_TEST(test_apprendre_toutes_options);
+  LANCER_TEST(test_generer_phrase_depuis);
+  LANCER_TEST(test_charger_ordre_3);
   printf("  (%lu executions de scenarios, chacune avec un echec "
          "d'allocation different)\n", nb_executions);
   afficher_bilan("defaillances");
 
   assert(blocs_vivants == vivants_initiaux);
   modele_detruire(&modele);
+  modele_detruire(&modele_3);
   free(sous);
   free(chemin_texte);
   free(chemin_modele);
+  free(chemin_modele_3);
   free(chemin_sortie);
+  free(chemin_anglais);
   detruire_repertoire_temporaire(corpus);
+  detruire_repertoire_temporaire(corpus_langues);
   detruire_repertoire_temporaire(autre);
   assert(blocs_vivants == 0);
   return EXIT_SUCCESS;

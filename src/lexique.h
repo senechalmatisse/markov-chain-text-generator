@@ -3,8 +3,9 @@
 Fichier lexique.h
 
 Lexique d'affichage : memorise comment chaque mot s'ecrit dans les textes
-appris, pour afficher le texte genere avec ses accents, ses majuscules et
-ses liaisons ("c'etait", "peut-etre", "M. Madeleine", "oui, monsieur").
+appris, pour afficher le texte genere avec ses accents, ses majuscules, ses
+liaisons ("c'etait", "peut-etre", "M. Madeleine", "oui, monsieur") et ses
+marques de dialogue (tirets et guillemets, cf. texte.h).
 
 Les mots et les bigrammes (mot precedent, mot) sont designes par leurs
 identifiants, attribues par l'appelant dans l'ordre 0, 1, 2, ... comme les
@@ -35,7 +36,10 @@ observe chaque occurrence. lexique_finaliser calcule alors les choix :
     dans ce contexte (memes regles) : le contexte distingue le verbe "a" de
     la preposition dans "il a" / "va a", ou "il m'a" de "M. Madeleine". Le
     choix du mot sert quand le bigramme n'a pas de vote.
-  - LIAISON d'un bigramme : separateur majoritaire entre ses deux mots.
+  - SEPARATEUR d'un bigramme : couple (liaison, marques de dialogue)
+    majoritaire entre ses deux mots. Pour un bigramme (0, v), ce sont les
+    marques placees devant v en debut de phrase : un mot qui commence le
+    plus souvent une replique ("--Oui, dit-il") garde son tiret.
   Les votes de bigramme utilisent l'algorithme de Boyer et Moore (majorite
   en une passe, 8 octets par vote) : la memoire reste proportionnelle au
   nombre de bigrammes.
@@ -77,6 +81,18 @@ typedef enum {
 
 /** Nombre maximal de mots, de bigrammes ou de variantes d'un mot. */
 #define LEXIQUE_NB_MAX (UINT_MAX - 1u)
+
+/**
+ * @brief  Indique si un couple (liaison, marques) decrit un separateur
+ *         possible : une apostrophe ou un trait d'union est le seul signe
+ *         entre deux mots, il n'est donc accompagne d'aucune marque.
+ * @pre    aucune.
+ * @return true si liaison < NB_LIAISONS, marques <= MARQUES_TOUTES et
+ *         (marques == MARQUE_AUCUNE ou liaison n'est ni LIAISON_APOSTROPHE
+ *         ni LIAISON_TRAIT_UNION) ; false sinon.
+ * @note   Complexite : O(1).
+ */
+bool lexique_separateur_valide(liaison_t liaison, unsigned int marques);
 
 /*
 Notations utilisees dans les contrats :
@@ -209,12 +225,16 @@ unsigned int lexique_ajouter_variante(lexique_t *l, unsigned int mot, const char
  * @param  graphie       graphie de l'occurrence.
  * @param  accentue      true si le texte contient des accents (sa graphie
  *                       renseigne sur les accents du mot).
- * @param  debut_phrase  true si le mot commence une phrase (sa casse ne
- *                       vote alors qu'en dernier recours, et la liaison
- *                       est ignoree).
- * @param  liaison       separateur entre le mot precedent et ce mot.
+ * @param  debut_phrase  true si le mot commence une phrase : sa casse ne
+ *                       vote alors qu'en dernier recours, la liaison est
+ *                       ignoree (LIAISON_ESPACE) ainsi que la marque
+ *                       MARQUE_FERME_GUILLEMET (elle concerne la phrase
+ *                       precedente).
+ * @param  liaison       liaison entre le mot precedent et ce mot.
+ * @param  marques       marques de dialogue placees devant ce mot.
  * @pre    l != NULL ; !finalise(l) ; bigramme < nb_bigrammes(l) ;
- *         graphie != NULL ; valide(graphie) ; liaison < NB_LIAISONS.
+ *         graphie != NULL ; valide(graphie) ;
+ *         lexique_separateur_valide(liaison, marques).
  * @post   en cas de succes : minuscules(graphie) est une variante du mot
  *         (ajoutee si besoin) ; les votes du mot et du bigramme sont mis a
  *         jour comme decrit en tete de fichier. En cas d'echec : lexique
@@ -224,7 +244,7 @@ unsigned int lexique_ajouter_variante(lexique_t *l, unsigned int mot, const char
  */
 bool lexique_observer(lexique_t *l, unsigned int bigramme,
                       const char *graphie, bool accentue, bool debut_phrase,
-                      liaison_t liaison);
+                      liaison_t liaison, unsigned int marques);
 
 /**
  * @brief  Termine l'apprentissage : calcule les choix d'affichage de chaque
@@ -317,6 +337,15 @@ unsigned int lexique_casse_bigramme(const lexique_t *l, unsigned int bigramme);
 liaison_t lexique_liaison(const lexique_t *l, unsigned int bigramme);
 
 /**
+ * @brief  Marques de dialogue choisies entre les deux mots d'un bigramme
+ *         (devant le mot, en debut de phrase, pour un bigramme (0, mot)).
+ * @pre    l != NULL ; finalise(l) ; bigramme < nb_bigrammes(l).
+ * @post   lexique_separateur_valide(lexique_liaison(l, bigramme), resultat).
+ * @return les marques (MARQUE_AUCUNE si le bigramme n'a pas de vote).
+ */
+unsigned int lexique_marques(const lexique_t *l, unsigned int bigramme);
+
+/**
  * @brief  Ecrit la graphie d'affichage du mot d'un bigramme : variante et
  *         casse du bigramme si elles existent, sinon celles du mot ; en
  *         debut de phrase, la premiere lettre est mise en majuscule.
@@ -338,14 +367,32 @@ size_t lexique_ecrire(const lexique_t *l, unsigned int bigramme,
                       bool debut_phrase, char *tampon, size_t taille);
 
 /**
+ * @brief  Ecrit la graphie d'affichage d'un mot hors de tout contexte :
+ *         variante et casse choisies pour le mot ; en debut de phrase, la
+ *         premiere lettre est mise en majuscule.
+ * @param  l             le lexique.
+ * @param  mot           le mot.
+ * @param  debut_phrase  true pour le premier mot d'une phrase.
+ * @param  tampon        destination (peut etre NULL si taille == 0).
+ * @param  taille        taille du tampon en octets.
+ * @pre    l != NULL ; finalise(l) ; mot < nb_mots(l) ;
+ *         lexique_variante_mot(l, mot) != LEXIQUE_AUCUNE ;
+ *         tampon != NULL || taille == 0.
+ * @post   comme lexique_ecrire.
+ * @return la longueur en octets de la graphie (sans le '\0').
+ * @note   Complexite : O(longueur).
+ */
+size_t lexique_ecrire_mot(const lexique_t *l, unsigned int mot,
+                          bool debut_phrase, char *tampon, size_t taille);
+
+/**
  * @brief  Redefinit les choix d'un mot (chargement d'un modele).
  * @pre    l != NULL ; finalise(l) ; mot < nb_mots(l) ;
  *         variante < nb_variantes(l, mot) ; casse < NB_CASSES.
  * @post   lexique_variante_mot(l, mot) == variante et
  *         lexique_casse_mot(l, mot) == casse.
  */
-void lexique_fixer_mot(lexique_t *l, unsigned int mot, unsigned int variante,
-                       casse_t casse);
+void lexique_fixer_mot(lexique_t *l, unsigned int mot, unsigned int variante, casse_t casse);
 
 /**
  * @brief  Redefinit les choix d'un bigramme (chargement d'un modele).
@@ -353,12 +400,12 @@ void lexique_fixer_mot(lexique_t *l, unsigned int mot, unsigned int variante,
  *         variante == LEXIQUE_AUCUNE
  *           || variante < nb_variantes(l, mot(l, bigramme)) ;
  *         casse == LEXIQUE_AUCUNE || casse < NB_CASSES ;
- *         liaison < NB_LIAISONS.
- * @post   lexique_variante_bigramme, lexique_casse_bigramme et
- *         lexique_liaison renvoient les valeurs donnees.
+ *         lexique_separateur_valide(liaison, marques).
+ * @post   lexique_variante_bigramme, lexique_casse_bigramme,
+ *         lexique_liaison et lexique_marques renvoient les valeurs donnees.
  */
 void lexique_fixer_bigramme(lexique_t *l, unsigned int bigramme,
                             unsigned int variante, unsigned int casse,
-                            liaison_t liaison);
+                            liaison_t liaison, unsigned int marques);
 
 #endif

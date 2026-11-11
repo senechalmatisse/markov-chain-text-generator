@@ -347,8 +347,7 @@ unsigned int hachage_ajouter(hachage_t *h, const char *mot)
     }
   }
   INVARIANT(2u * (size_t)h->nb_mots <= h->capacite);
-  POSTCONDITION(identifiant == HACHAGE_ABSENT
-                || strcmp(h->entrees[identifiant].mot, mot) == 0);
+  POSTCONDITION(identifiant == HACHAGE_ABSENT || strcmp(h->entrees[identifiant].mot, mot) == 0);
   return identifiant;
 }
 
@@ -432,8 +431,7 @@ size_t hachage_capacite(const hachage_t *h)
 /** Distance (en cases) entre la case initiale d'un mot et sa case reelle. */
 static size_t deplacement(const hachage_t *h, size_t p)
 {
-  size_t initiale = case_initiale(h->entrees[h->cases[p] - 1u].code,
-                                  h->nb_bits);
+  size_t initiale = case_initiale(h->entrees[h->cases[p] - 1u].code, h->nb_bits);
 
   return (p - initiale) & (h->capacite - 1u);
 }
@@ -474,129 +472,325 @@ double hachage_sondage_moyen(const hachage_t *h)
 
 
 /* ======================================================================== */
-/*                 Table de hachage de paires d'identifiants                */
+/*                Table de hachage de n-uplets d'identifiants               */
 /* ======================================================================== */
 
-/* Le code d'une paire range ses deux elements dans 64 bits. */
-#if UINT_MAX > 0xFFFFFFFFu
-#error "les paires supposent des unsigned int d'au plus 32 bits"
-#endif
+/** Multiplicateur impair du melange des elements d'un n-uplet. */
+#define MULTIPLICATEUR_NUPLET UINT64_C(0xFF51AFD7ED558CCD)
 
 /*
 Representation (memes principes que la table des mots) :
   - cases[0 .. capacite-1] : 0 si la case est libre, identifiant + 1 sinon ;
-  - codes[id] = premier * 2^32 + second pour chaque identifiant id < nb.
-Invariants : capacite == 2^nb_bits ; 2 * nb <= capacite ; chaque paire est
-atteignable depuis sa case initiale sans case libre.
+  - elements[taille * id + r] : element de rang r du n-uplet id < nb.
+Invariants : capacite == 2^nb_bits ; 2 * nb <= capacite ; chaque n-uplet est
+atteignable depuis sa case initiale sans case libre ;
+nb <= capacite_nuplets (nombre de n-uplets que peut contenir elements).
 */
-struct hachage_paires_s {
+struct hachage_nuplets_s {
   unsigned int *cases;
   size_t capacite;
   unsigned int nb_bits;
-  uint64_t *codes;
+  unsigned int *elements;
+  unsigned int taille;
   unsigned int nb;
-  unsigned int capacite_codes;
+  unsigned int capacite_nuplets;
 };
 
-/** Code injectif d'une paire. */
-static uint64_t code_paire(unsigned int premier, unsigned int second)
+/** Une table de paires est une table de n-uplets de taille 2. */
+struct hachage_paires_s {
+  struct hachage_nuplets_s table;
+};
+
+/**
+ * Code de hachage d'un n-uplet : chaque element est melange au code par un
+ * ou-exclusif, une multiplication impaire et un decalage (les bits de
+ * poids fort se repandent ainsi sur tout le code).
+ */
+static uint64_t code_nuplet(const unsigned int *elements, unsigned int taille)
 {
-  return ((uint64_t)premier << 32) | (uint64_t)second;
+  uint64_t code = 0u;
+  unsigned int r;
+
+  for (r = 0u; r < taille; r++) {
+    code = (code ^ (uint64_t)elements[r]) * MULTIPLICATEUR_NUPLET;
+    code ^= code >> 32;
+  }
+  return code;
 }
 
-/** Case contenant le code, ou premiere case libre rencontree. */
-static size_t chercher_paire(const hachage_paires_t *p, uint64_t code)
+/** Elements du n-uplet d'identifiant donne. */
+static const unsigned int *elements_de(const struct hachage_nuplets_s *t, unsigned int identifiant)
 {
-  size_t masque = p->capacite - 1u;
-  size_t i = case_initiale(code, p->nb_bits);
+  return t->elements + ((size_t)t->taille * (size_t)identifiant);
+}
 
-  while (p->cases[i] != 0u && p->codes[p->cases[i] - 1u] != code) {
+/** Case contenant le n-uplet, ou premiere case libre rencontree. */
+static size_t chercher_nuplet(const struct hachage_nuplets_s *t, const unsigned int *elements)
+{
+  size_t masque = t->capacite - 1u;
+  size_t octets = (size_t)t->taille * sizeof(unsigned int);
+  size_t i = case_initiale(code_nuplet(elements, t->taille), t->nb_bits);
+
+  while (t->cases[i] != 0u && memcmp(elements_de(t, t->cases[i] - 1u), elements, octets) != 0) {
     i = (i + 1u) & masque;
   }
   return i;
 }
 
-/** Double le nombre de cases et replace toutes les paires. */
-static bool agrandir_cases_paires(hachage_paires_t *p)
+/** Double le nombre de cases et replace tous les n-uplets. */
+static bool agrandir_cases_nuplets(struct hachage_nuplets_s *t)
 {
-  unsigned int nouveaux_bits = p->nb_bits + 1u;
-  size_t nouvelle_capacite = 2u * p->capacite;
+  unsigned int nouveaux_bits = t->nb_bits + 1u;
+  size_t nouvelle_capacite = 2u * t->capacite;
   size_t masque = nouvelle_capacite - 1u;
   unsigned int *nouvelles;
   unsigned int id;
   size_t i;
   bool succes = false;
 
-  if (nouveaux_bits <= NB_BITS_MAXIMAL && nouvelle_capacite > p->capacite) {
+  if (nouveaux_bits <= NB_BITS_MAXIMAL && nouvelle_capacite > t->capacite) {
     nouvelles = calloc(nouvelle_capacite, sizeof(unsigned int));
     if (nouvelles != NULL) {
-      for (id = 0u; id < p->nb; id++) {
-        i = case_initiale(p->codes[id], nouveaux_bits);
+      for (id = 0u; id < t->nb; id++) {
+        i = case_initiale(code_nuplet(elements_de(t, id), t->taille), nouveaux_bits);
         while (nouvelles[i] != 0u) {
           i = (i + 1u) & masque;
         }
         nouvelles[i] = id + 1u;
       }
-      free(p->cases);
-      p->cases = nouvelles;
-      p->capacite = nouvelle_capacite;
-      p->nb_bits = nouveaux_bits;
+      free(t->cases);
+      t->cases = nouvelles;
+      t->capacite = nouvelle_capacite;
+      t->nb_bits = nouveaux_bits;
       succes = true;
     }
   }
   return succes;
 }
 
-/** Double la capacite du tableau des codes. */
-static bool agrandir_codes(hachage_paires_t *p)
+/** Double la capacite du tableau des elements. */
+static bool agrandir_elements(struct hachage_nuplets_s *t)
 {
-  size_t nouvelle_capacite = 2u * (size_t)p->capacite_codes;
-  uint64_t *codes;
+  size_t nouvelle_capacite = 2u * (size_t)t->capacite_nuplets;
+  size_t octets_par_nuplet = (size_t)t->taille * sizeof(unsigned int);
+  unsigned int *elements;
   bool succes = false;
 
   if (nouvelle_capacite > HACHAGE_NB_MOTS_MAX) {
     nouvelle_capacite = HACHAGE_NB_MOTS_MAX;
   }
-  if (nouvelle_capacite > p->capacite_codes
-      && nouvelle_capacite <= SIZE_MAX / sizeof(uint64_t)) {
-    codes = realloc(p->codes, nouvelle_capacite * sizeof(uint64_t));
-    if (codes != NULL) {
-      p->codes = codes;
-      p->capacite_codes = (unsigned int)nouvelle_capacite;
+  if (nouvelle_capacite > t->capacite_nuplets && nouvelle_capacite <= SIZE_MAX / octets_par_nuplet) {
+    elements = realloc(t->elements, nouvelle_capacite * octets_par_nuplet);
+    if (elements != NULL) {
+      t->elements = elements;
+      t->capacite_nuplets = (unsigned int)nouvelle_capacite;
       succes = true;
     }
   }
   return succes;
 }
 
+/**
+ * Initialise une table vide (structure deja allouee). Renvoie false si la
+ * memoire manque : la structure ne possede alors aucune memoire.
+ */
+static bool initialiser_nuplets(struct hachage_nuplets_s *t, unsigned int taille, unsigned int nb_prevus)
+{
+  unsigned int nb_bits = NB_BITS_MINIMAL;
+
+  while (nb_bits < NB_BITS_MAXIMAL && ((size_t)1 << nb_bits) / 2u < (size_t)nb_prevus) {
+    nb_bits++;
+  }
+  t->capacite = (size_t)1 << nb_bits;
+  t->nb_bits = nb_bits;
+  t->taille = taille;
+  t->nb = 0u;
+  t->capacite_nuplets = (nb_prevus > CAPACITE_ENTREES_MINIMALE) ? nb_prevus : CAPACITE_ENTREES_MINIMALE;
+  t->cases = calloc(t->capacite, sizeof(unsigned int));
+  t->elements = NULL;
+  if ((size_t)t->capacite_nuplets <= SIZE_MAX / ((size_t)taille * sizeof(unsigned int))) {
+    t->elements = malloc((size_t)t->capacite_nuplets * (size_t)taille * sizeof(unsigned int));
+  }
+  if (t->cases == NULL || t->elements == NULL) {
+    free(t->cases);
+    free(t->elements);
+    t->cases = NULL;
+    t->elements = NULL;
+  }
+  return t->cases != NULL;
+}
+
+/** Ajout d'un n-uplet (cf. hachage_nuplets_ajouter). */
+static unsigned int ajouter_nuplet(struct hachage_nuplets_s *t, const unsigned int *elements)
+{
+  size_t i;
+  unsigned int identifiant = HACHAGE_ABSENT;
+  bool succes = true;
+
+  i = chercher_nuplet(t, elements);
+  if (t->cases[i] != 0u) {
+    identifiant = t->cases[i] - 1u;
+  } else if (t->nb >= HACHAGE_NB_MOTS_MAX) {
+    errno = ERANGE;
+  } else {
+    if (2u * ((size_t)t->nb + 1u) > t->capacite) {
+      succes = agrandir_cases_nuplets(t);
+      if (succes) {
+        i = chercher_nuplet(t, elements);
+      }
+    }
+    if (succes && t->nb == t->capacite_nuplets) {
+      succes = agrandir_elements(t);
+    }
+    if (succes) {
+      identifiant = t->nb;
+      memcpy(t->elements + ((size_t)t->taille * (size_t)identifiant),
+             elements, (size_t)t->taille * sizeof(unsigned int));
+      t->cases[i] = identifiant + 1u;
+      t->nb++;
+    } else {
+      errno = ENOMEM;
+    }
+  }
+  INVARIANT(2u * (size_t)t->nb <= t->capacite);
+  INVARIANT(t->nb <= t->capacite_nuplets);
+  return identifiant;
+}
+
+/** Identifiant d'un n-uplet, ou HACHAGE_ABSENT. */
+static unsigned int identifiant_nuplet(const struct hachage_nuplets_s *t, const unsigned int *elements)
+{
+  size_t i = chercher_nuplet(t, elements);
+
+  return (t->cases[i] != 0u) ? t->cases[i] - 1u : HACHAGE_ABSENT;
+}
+
+/** Nombre moyen de sondages d'une recherche fructueuse. */
+static double sondage_moyen_nuplets(const struct hachage_nuplets_s *t)
+{
+  size_t i;
+  size_t initiale;
+  double total = 0.0;
+  double moyenne = 0.0;
+
+  if (t->nb > 0u) {
+    for (i = 0u; i < t->capacite; i++) {
+      if (t->cases[i] != 0u) {
+        initiale = case_initiale(code_nuplet(elements_de(t, t->cases[i] - 1u), t->taille), t->nb_bits);
+        total += (double)(((i - initiale) & (t->capacite - 1u)) + 1u);
+      }
+    }
+    moyenne = total / (double)t->nb;
+  }
+  return moyenne;
+}
+
+hachage_nuplets_t *hachage_nuplets_creer(unsigned int taille, unsigned int nb_prevus)
+{
+  hachage_nuplets_t *t;
+
+  PRECONDITION(taille >= 1u && taille <= HACHAGE_TAILLE_NUPLET_MAX);
+  PRECONDITION(nb_prevus <= HACHAGE_NB_MOTS_MAX);
+
+  t = malloc(sizeof(hachage_nuplets_t));
+  if (t != NULL && !initialiser_nuplets(t, taille, nb_prevus)) {
+    free(t);
+    t = NULL;
+  }
+  if (t == NULL) {
+    errno = ENOMEM;
+  }
+  POSTCONDITION(t == NULL || (hachage_nuplets_nb(t) == 0u
+                              && hachage_nuplets_taille(t) == taille
+                              && hachage_nuplets_capacite(t) / 2u >= (size_t)nb_prevus));
+  return t;
+}
+
+void hachage_nuplets_detruire(hachage_nuplets_t **t)
+{
+  PRECONDITION(t != NULL);
+  if (*t != NULL) {
+    free((*t)->cases);
+    free((*t)->elements);
+    free(*t);
+    *t = NULL;
+  }
+  POSTCONDITION(*t == NULL);
+}
+
+unsigned int hachage_nuplets_ajouter(hachage_nuplets_t *t, const unsigned int *elements)
+{
+  unsigned int identifiant;
+
+  PRECONDITION(t != NULL);
+  PRECONDITION(elements != NULL);
+  identifiant = ajouter_nuplet(t, elements);
+  POSTCONDITION(identifiant == HACHAGE_ABSENT
+                || (identifiant < t->nb
+                    && identifiant_nuplet(t, elements) == identifiant));
+  return identifiant;
+}
+
+unsigned int hachage_nuplets_identifiant(const hachage_nuplets_t *t, const unsigned int *elements)
+{
+  PRECONDITION(t != NULL);
+  PRECONDITION(elements != NULL);
+  return identifiant_nuplet(t, elements);
+}
+
+unsigned int hachage_nuplets_element(const hachage_nuplets_t *t,
+                                     unsigned int identifiant,
+                                     unsigned int rang)
+{
+  PRECONDITION(t != NULL);
+  PRECONDITION(identifiant < t->nb);
+  PRECONDITION(rang < t->taille);
+  return elements_de(t, identifiant)[rang];
+}
+
+unsigned int hachage_nuplets_taille(const hachage_nuplets_t *t)
+{
+  PRECONDITION(t != NULL);
+  return t->taille;
+}
+
+unsigned int hachage_nuplets_nb(const hachage_nuplets_t *t)
+{
+  PRECONDITION(t != NULL);
+  return t->nb;
+}
+
+size_t hachage_nuplets_capacite(const hachage_nuplets_t *t)
+{
+  PRECONDITION(t != NULL);
+  return t->capacite;
+}
+
+double hachage_nuplets_sondage_moyen(const hachage_nuplets_t *t)
+{
+  double moyenne;
+
+  PRECONDITION(t != NULL);
+  moyenne = sondage_moyen_nuplets(t);
+  POSTCONDITION(t->nb == 0u || moyenne >= 1.0);
+  return moyenne;
+}
+
+
+/* ======================================================================== */
+/*                 Table de hachage de paires d'identifiants                */
+/* ======================================================================== */
+
 hachage_paires_t *hachage_paires_creer(unsigned int nb_paires_prevues)
 {
   hachage_paires_t *p;
-  unsigned int nb_bits = NB_BITS_MINIMAL;
-  unsigned int capacite_codes;
 
   PRECONDITION(nb_paires_prevues <= HACHAGE_NB_MOTS_MAX);
 
-  while (nb_bits < NB_BITS_MAXIMAL
-         && ((size_t)1 << nb_bits) / 2u < (size_t)nb_paires_prevues) {
-    nb_bits++;
-  }
-  capacite_codes = (nb_paires_prevues > CAPACITE_ENTREES_MINIMALE)
-                   ? nb_paires_prevues : CAPACITE_ENTREES_MINIMALE;
   p = malloc(sizeof(hachage_paires_t));
-  if (p != NULL) {
-    p->capacite = (size_t)1 << nb_bits;
-    p->nb_bits = nb_bits;
-    p->nb = 0u;
-    p->capacite_codes = capacite_codes;
-    p->cases = calloc(p->capacite, sizeof(unsigned int));
-    p->codes = calloc(capacite_codes, sizeof(uint64_t));
-    if (p->cases == NULL || p->codes == NULL) {
-      free(p->cases);
-      free(p->codes);
-      free(p);
-      p = NULL;
-    }
+  if (p != NULL && !initialiser_nuplets(&p->table, 2u, nb_paires_prevues)) {
+    free(p);
+    p = NULL;
   }
   if (p == NULL) {
     errno = ENOMEM;
@@ -611,51 +805,26 @@ void hachage_paires_detruire(hachage_paires_t **p)
 {
   PRECONDITION(p != NULL);
   if (*p != NULL) {
-    free((*p)->cases);
-    free((*p)->codes);
+    free((*p)->table.cases);
+    free((*p)->table.elements);
     free(*p);
     *p = NULL;
   }
   POSTCONDITION(*p == NULL);
 }
 
-unsigned int hachage_paires_ajouter(hachage_paires_t *p, unsigned int premier,
-                                    unsigned int second)
+unsigned int hachage_paires_ajouter(hachage_paires_t *p, unsigned int premier, unsigned int second)
 {
-  uint64_t code = code_paire(premier, second);
-  size_t i;
-  unsigned int identifiant = HACHAGE_ABSENT;
-  bool succes = true;
+  unsigned int elements[2];
+  unsigned int identifiant;
 
   PRECONDITION(p != NULL);
-
-  i = chercher_paire(p, code);
-  if (p->cases[i] != 0u) {
-    identifiant = p->cases[i] - 1u;
-  } else if (p->nb >= HACHAGE_NB_MOTS_MAX) {
-    errno = ERANGE;
-  } else {
-    if (2u * ((size_t)p->nb + 1u) > p->capacite) {
-      succes = agrandir_cases_paires(p);
-      if (succes) {
-        i = chercher_paire(p, code);
-      }
-    }
-    if (succes && p->nb == p->capacite_codes) {
-      succes = agrandir_codes(p);
-    }
-    if (succes) {
-      identifiant = p->nb;
-      p->codes[identifiant] = code;
-      p->cases[i] = identifiant + 1u;
-      p->nb++;
-    } else {
-      errno = ENOMEM;
-    }
-  }
-  INVARIANT(2u * (size_t)p->nb <= p->capacite);
+  elements[0] = premier;
+  elements[1] = second;
+  identifiant = ajouter_nuplet(&p->table, elements);
   POSTCONDITION(identifiant == HACHAGE_ABSENT
-                || p->codes[identifiant] == code);
+                || (hachage_paires_premier(p, identifiant) == premier
+                    && hachage_paires_second(p, identifiant) == second));
   return identifiant;
 }
 
@@ -663,62 +832,46 @@ unsigned int hachage_paires_identifiant(const hachage_paires_t *p,
                                         unsigned int premier,
                                         unsigned int second)
 {
-  size_t i;
-  unsigned int identifiant = HACHAGE_ABSENT;
+  unsigned int elements[2];
 
   PRECONDITION(p != NULL);
-  i = chercher_paire(p, code_paire(premier, second));
-  if (p->cases[i] != 0u) {
-    identifiant = p->cases[i] - 1u;
-  }
-  return identifiant;
+  elements[0] = premier;
+  elements[1] = second;
+  return identifiant_nuplet(&p->table, elements);
 }
 
-unsigned int hachage_paires_premier(const hachage_paires_t *p,
-                                    unsigned int identifiant)
+unsigned int hachage_paires_premier(const hachage_paires_t *p, unsigned int identifiant)
 {
   PRECONDITION(p != NULL);
-  PRECONDITION(identifiant < p->nb);
-  return (unsigned int)(p->codes[identifiant] >> 32);
+  PRECONDITION(identifiant < p->table.nb);
+  return elements_de(&p->table, identifiant)[0];
 }
 
-unsigned int hachage_paires_second(const hachage_paires_t *p,
-                                   unsigned int identifiant)
+unsigned int hachage_paires_second(const hachage_paires_t *p, unsigned int identifiant)
 {
   PRECONDITION(p != NULL);
-  PRECONDITION(identifiant < p->nb);
-  return (unsigned int)(p->codes[identifiant] & UINT64_C(0xFFFFFFFF));
+  PRECONDITION(identifiant < p->table.nb);
+  return elements_de(&p->table, identifiant)[1];
 }
 
 unsigned int hachage_paires_nb(const hachage_paires_t *p)
 {
   PRECONDITION(p != NULL);
-  return p->nb;
+  return p->table.nb;
 }
 
 size_t hachage_paires_capacite(const hachage_paires_t *p)
 {
   PRECONDITION(p != NULL);
-  return p->capacite;
+  return p->table.capacite;
 }
 
 double hachage_paires_sondage_moyen(const hachage_paires_t *p)
 {
-  size_t i;
-  size_t initiale;
-  double total = 0.0;
-  double moyenne = 0.0;
+  double moyenne;
 
   PRECONDITION(p != NULL);
-  if (p->nb > 0u) {
-    for (i = 0u; i < p->capacite; i++) {
-      if (p->cases[i] != 0u) {
-        initiale = case_initiale(p->codes[p->cases[i] - 1u], p->nb_bits);
-        total += (double)(((i - initiale) & (p->capacite - 1u)) + 1u);
-      }
-    }
-    moyenne = total / (double)p->nb;
-  }
-  POSTCONDITION(p->nb == 0u || moyenne >= 1.0);
+  moyenne = sondage_moyen_nuplets(&p->table);
+  POSTCONDITION(p->table.nb == 0u || moyenne >= 1.0);
   return moyenne;
 }

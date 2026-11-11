@@ -102,8 +102,7 @@ static void test_code_injectif_mots_courts(void)
 {
   /* tous les mots d'au plus 4 lettres (475 254 mots) ont des codes
      differents, compris entre 1 et 27^4 - 1 */
-  const unsigned long nb_mots = 26ul + (26ul * 26ul) + (26ul * 26ul * 26ul)
-                                + (26ul * 26ul * 26ul * 26ul);
+  const unsigned long nb_mots = 26ul + (26ul * 26ul) + (26ul * 26ul * 26ul) + (26ul * 26ul * 26ul * 26ul);
   const size_t nb_codes = 27u * 27u * 27u * 27u;
   unsigned char *vus = calloc(nb_codes, 1u);
   char mot[8];
@@ -463,6 +462,173 @@ static void test_paires_agrandissement(void)
 
 
 /* ======================================================================== */
+/*                      Table de n-uplets d'identifiants                    */
+/* ======================================================================== */
+
+static void test_nuplets_creer_detruire(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(3u, 0u);
+  const unsigned int zeros[3] = { 0u, 0u, 0u };
+  size_t capacite;
+
+  assert(t != NULL);
+  assert(hachage_nuplets_nb(t) == 0u);
+  assert(hachage_nuplets_taille(t) == 3u);
+  capacite = hachage_nuplets_capacite(t);
+  assert(capacite >= 16u && (capacite & (capacite - 1u)) == 0u);
+  assert(hachage_nuplets_identifiant(t, zeros) == HACHAGE_ABSENT);
+  assert(hachage_nuplets_sondage_moyen(t) == 0.0);
+  hachage_nuplets_detruire(&t);
+  assert(t == NULL);
+  hachage_nuplets_detruire(&t);            /* sans effet sur NULL */
+  /* dimensionnement a la creation, tailles extremes */
+  t = hachage_nuplets_creer(1u, 1000u);
+  assert(hachage_nuplets_capacite(t) >= 2000u);
+  hachage_nuplets_detruire(&t);
+  t = hachage_nuplets_creer(HACHAGE_TAILLE_NUPLET_MAX, 0u);
+  assert(hachage_nuplets_taille(t) == HACHAGE_TAILLE_NUPLET_MAX);
+  hachage_nuplets_detruire(&t);
+}
+
+static void test_nuplets_ajouter(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(3u, 0u);
+  const unsigned int zeros[3] = { 0u, 0u, 0u };
+  const unsigned int abc[3] = { 1u, 2u, 3u };
+  const unsigned int cba[3] = { 3u, 2u, 1u };
+  const unsigned int debut[3] = { 0u, 0u, 1u };
+  const unsigned int extremes[3] = { UINT_MAX, 0u, UINT_MAX - 1u };
+  const unsigned int absent[3] = { 1u, 2u, 4u };
+  unsigned int copie[3] = { 1u, 2u, 3u };
+
+  assert(hachage_nuplets_ajouter(t, zeros) == 0u);
+  assert(hachage_nuplets_ajouter(t, abc) == 1u);
+  assert(hachage_nuplets_ajouter(t, cba) == 2u);        /* ordonnes */
+  assert(hachage_nuplets_ajouter(t, debut) == 3u);
+  assert(hachage_nuplets_ajouter(t, extremes) == 4u);
+  assert(hachage_nuplets_nb(t) == 5u);
+  /* un n-uplet deja present garde son identifiant ; les elements sont
+     recopies : l'appelant peut modifier son tableau */
+  assert(hachage_nuplets_ajouter(t, copie) == 1u);
+  copie[0] = 9u;
+  assert(hachage_nuplets_identifiant(t, abc) == 1u);
+  assert(hachage_nuplets_identifiant(t, copie) == HACHAGE_ABSENT);
+  assert(hachage_nuplets_ajouter(t, zeros) == 0u);
+  assert(hachage_nuplets_nb(t) == 5u);
+  assert(hachage_nuplets_identifiant(t, cba) == 2u);
+  assert(hachage_nuplets_identifiant(t, absent) == HACHAGE_ABSENT);
+  assert(hachage_nuplets_element(t, 2u, 0u) == 3u);
+  assert(hachage_nuplets_element(t, 2u, 1u) == 2u);
+  assert(hachage_nuplets_element(t, 2u, 2u) == 1u);
+  assert(hachage_nuplets_element(t, 4u, 0u) == UINT_MAX);
+  assert(hachage_nuplets_element(t, 4u, 2u) == UINT_MAX - 1u);
+  hachage_nuplets_detruire(&t);
+}
+
+static void test_nuplets_toutes_tailles(void)
+{
+  /* pour chaque taille : n-uplets (i, i+1, ..., i+n-1) et leurs decales */
+  unsigned int elements[HACHAGE_TAILLE_NUPLET_MAX];
+  hachage_nuplets_t *t;
+  unsigned int taille;
+  unsigned int i;
+  unsigned int r;
+
+  for (taille = 1u; taille <= HACHAGE_TAILLE_NUPLET_MAX; taille += 7u) {
+    t = hachage_nuplets_creer(taille, 0u);
+    assert(t != NULL);
+    for (i = 0u; i < 200u; i++) {
+      for (r = 0u; r < taille; r++) {
+        elements[r] = i + r;
+      }
+      assert(hachage_nuplets_ajouter(t, elements) == i);
+    }
+    for (i = 0u; i < 200u; i++) {
+      for (r = 0u; r < taille; r++) {
+        elements[r] = i + r;
+      }
+      assert(hachage_nuplets_identifiant(t, elements) == i);
+      assert(hachage_nuplets_element(t, i, 0u) == i);
+      assert(hachage_nuplets_element(t, i, taille - 1u) == i + taille - 1u);
+      /* un seul element change : n-uplet absent */
+      elements[taille - 1u] += 1000u;
+      assert(hachage_nuplets_identifiant(t, elements) == HACHAGE_ABSENT);
+    }
+    hachage_nuplets_detruire(&t);
+  }
+}
+
+static void test_nuplets_agrandissement(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(3u, 0u);
+  unsigned int elements[3];
+  unsigned int i;
+  unsigned int j;
+  unsigned int k;
+  unsigned int id = 0u;
+
+  /* 40 x 40 x 40 triplets : nombreux agrandissements */
+  for (i = 0u; i < 40u; i++) {
+    for (j = 0u; j < 40u; j++) {
+      for (k = 0u; k < 40u; k++) {
+        elements[0] = i;
+        elements[1] = j;
+        elements[2] = k;
+        assert(hachage_nuplets_ajouter(t, elements) == id);
+        id++;
+      }
+    }
+    assert(2u * (size_t)hachage_nuplets_nb(t) <= hachage_nuplets_capacite(t));
+  }
+  assert(hachage_nuplets_nb(t) == 64000u);
+  id = 0u;
+  for (i = 0u; i < 40u; i++) {
+    for (j = 0u; j < 40u; j++) {
+      for (k = 0u; k < 40u; k++) {
+        elements[0] = i;
+        elements[1] = j;
+        elements[2] = k;
+        assert(hachage_nuplets_identifiant(t, elements) == id);
+        assert(hachage_nuplets_element(t, id, 0u) == i);
+        assert(hachage_nuplets_element(t, id, 1u) == j);
+        assert(hachage_nuplets_element(t, id, 2u) == k);
+        id++;
+      }
+    }
+  }
+  /* triplets tres reguliers : la repartition reste bonne */
+  assert(hachage_nuplets_sondage_moyen(t) >= 1.0);
+  assert(hachage_nuplets_sondage_moyen(t) < 1.5);
+  hachage_nuplets_detruire(&t);
+}
+
+static void test_paires_et_nuplets_de_taille_2(void)
+{
+  /* une table de paires se comporte comme une table de n-uplets de
+     taille 2 : memes identifiants pour les memes insertions */
+  hachage_paires_t *p = hachage_paires_creer(0u);
+  hachage_nuplets_t *t = hachage_nuplets_creer(2u, 0u);
+  unsigned int elements[2];
+  unsigned int i;
+
+  for (i = 0u; i < 5000u; i++) {
+    elements[0] = (i * 7u) % 97u;
+    elements[1] = (i * 13u) % 89u;
+    assert(hachage_paires_ajouter(p, elements[0], elements[1]) == hachage_nuplets_ajouter(t, elements));
+  }
+  assert(hachage_paires_nb(p) == hachage_nuplets_nb(t));
+  assert(hachage_paires_capacite(p) == hachage_nuplets_capacite(t));
+  assert(hachage_paires_sondage_moyen(p) == hachage_nuplets_sondage_moyen(t));
+  for (i = 0u; i < hachage_paires_nb(p); i++) {
+    assert(hachage_paires_premier(p, i) == hachage_nuplets_element(t, i, 0u));
+    assert(hachage_paires_second(p, i) == hachage_nuplets_element(t, i, 1u));
+  }
+  hachage_paires_detruire(&p);
+  hachage_nuplets_detruire(&t);
+}
+
+
+/* ======================================================================== */
 /*                        Verification des contrats                         */
 /* ======================================================================== */
 
@@ -533,6 +699,48 @@ static void sans_violation(void)
   hachage_detruire(&h);
 }
 
+static void violation_nuplets_taille_nulle(void)
+{
+  hachage_nuplets_creer(0u, 0u);
+}
+
+static void violation_nuplets_taille_trop_grande(void)
+{
+  hachage_nuplets_creer(HACHAGE_TAILLE_NUPLET_MAX + 1u, 0u);
+}
+
+static void violation_nuplets_table_nulle(void)
+{
+  const unsigned int elements[2] = { 0u, 0u };
+
+  hachage_nuplets_ajouter(NULL, elements);
+}
+
+static void violation_nuplets_elements_nuls(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(2u, 0u);
+
+  hachage_nuplets_identifiant(t, NULL);
+}
+
+static void violation_nuplet_inexistant(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(2u, 0u);
+  const unsigned int elements[2] = { 1u, 1u };
+
+  hachage_nuplets_ajouter(t, elements);
+  hachage_nuplets_element(t, 1u, 0u);       /* seul l'identifiant 0 existe */
+}
+
+static void violation_nuplet_rang_trop_grand(void)
+{
+  hachage_nuplets_t *t = hachage_nuplets_creer(2u, 0u);
+  const unsigned int elements[2] = { 1u, 1u };
+
+  hachage_nuplets_ajouter(t, elements);
+  hachage_nuplets_element(t, 0u, 2u);       /* rangs 0 et 1 seulement */
+}
+
 static void test_contrats(void)
 {
   assert(!viole_contrat(sans_violation));
@@ -545,6 +753,12 @@ static void test_contrats(void)
   assert(viole_contrat(violation_code_mot_invalide));
   assert(viole_contrat(violation_paires_nulle));
   assert(viole_contrat(violation_paire_inexistante));
+  assert(viole_contrat(violation_nuplets_taille_nulle));
+  assert(viole_contrat(violation_nuplets_taille_trop_grande));
+  assert(viole_contrat(violation_nuplets_table_nulle));
+  assert(viole_contrat(violation_nuplets_elements_nuls));
+  assert(viole_contrat(violation_nuplet_inexistant));
+  assert(viole_contrat(violation_nuplet_rang_trop_grand));
 }
 
 
@@ -567,6 +781,11 @@ int main(void)
   LANCER_TEST(test_paires_creer_detruire);
   LANCER_TEST(test_paires_ajouter);
   LANCER_TEST(test_paires_agrandissement);
+  LANCER_TEST(test_nuplets_creer_detruire);
+  LANCER_TEST(test_nuplets_ajouter);
+  LANCER_TEST(test_nuplets_toutes_tailles);
+  LANCER_TEST(test_nuplets_agrandissement);
+  LANCER_TEST(test_paires_et_nuplets_de_taille_2);
   LANCER_TEST(test_contrats);
   afficher_bilan("hachage");
   return EXIT_SUCCESS;

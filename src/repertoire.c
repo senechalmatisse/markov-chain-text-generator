@@ -3,7 +3,7 @@
 Fichier repertoire.c
 
 Implementation de l'iterateur de mots, de la liste des fichiers d'un
-repertoire et de la construction d'une chaine de Markov (cf. repertoire.h).
+repertoire ou d'un corpus et de la construction d'une chaine de Markov (cf. repertoire.h).
 Les fonctions POSIX opendir / readdir / closedir, stat, lstat et fstat
 servent au parcours des repertoires.
 */
@@ -57,7 +57,12 @@ struct iterateur_mots_s {
   long fin;                                 /* fin du texte utile, ou -1 */
   bool accentue;                            /* octets non ASCII presents */
   bool mot_disponible;                      /* dernier appel : un mot */
+  bool commence;                            /* un mot a deja ete demande */
+  bool phrase_par_ligne;                    /* fin de ligne = fin de phrase */
   liaison_t liaison;                        /* separateur apres le mot */
+  unsigned int marques;                     /* marques devant le mot */
+  unsigned int marques_en_attente;          /* marques lues apres le mot :
+                                               celles du mot suivant */
   ponctuation_t ponctuation;                /* ponctuation finale du mot */
   bool termine;                             /* plus aucun mot a renvoyer */
   int erreur;                               /* 0 ou code errno */
@@ -258,6 +263,89 @@ static bool est_trait_union(long point_code)
   return point_code == '-' || point_code == 0x2010 || point_code == 0x2011;
 }
 
+/** Guillemets toujours ouvrants : francais, et allemand (en bas). */
+static bool est_guillemet_ouvrant(long point_code)
+{
+  return point_code == 0xAB || point_code == 0x201E;
+}
+
+/** Guillemet toujours fermant : francais. */
+static bool est_guillemet_fermant(long point_code)
+{
+  return point_code == 0xBB;
+}
+
+/**
+ * Guillemets ouvrants ou fermants selon la langue et la position : droit
+ * ('"') et anglais (U+201C, U+201D ; le premier ferme une citation en
+ * allemand, le second en ouvre une en suedois).
+ */
+static bool est_guillemet_ambigu(long point_code)
+{
+  return point_code == '"' || point_code == 0x201C || point_code == 0x201D;
+}
+
+/** Tirets : cadratin, demi-cadratin et barre horizontale. */
+static bool est_tiret(long point_code)
+{
+  return point_code == 0x2014 || point_code == 0x2013 || point_code == 0x2015;
+}
+
+/**
+ * Indique si un guillemet ambigu suivi de ce caractere est fermant : il est
+ * suivi d'un blanc, d'une fin de ligne ou de fichier, ou d'un signe de
+ * ponctuation ; sinon il est colle a ce qu'il ouvre.
+ */
+static bool ferme_guillemet_ambigu(long suivant)
+{
+  return suivant == FIN_FICHIER || suivant == '\n' || est_blanc(suivant)
+         || est_ponctuation_finale(suivant) || suivant == ','
+         || suivant == ';' || suivant == ':' || suivant == ')'
+         || suivant == ']' || est_guillemet_ambigu(suivant)
+         || est_guillemet_fermant(suivant);
+}
+
+/** Marques de dialogue reconnues dans une suite de separateurs. */
+typedef struct {
+  unsigned int marques;     /* marques reconnues jusqu'ici */
+  unsigned int nb_traits;   /* longueur (au plus 4) de la suite de '-' en cours */
+  bool blanc_avant_traits;  /* cette suite de '-' suit un blanc ou un debut de ligne */
+} separateurs_t;
+
+/**
+ * Prend en compte un separateur (caractere qui n'est pas une lettre),
+ * connaissant le caractere qui le precede et celui qui le suit, et met a
+ * jour les marques de dialogue (cf. GUILLEMETS ET TIRETS dans repertoire.h).
+ */
+static void observer_separateur(separateurs_t *s, long caractere, long precedent, long suivant)
+{
+  if (caractere == '-') {
+    if (s->nb_traits == 0u) {
+      s->blanc_avant_traits = (precedent == '\n' || est_blanc(precedent));
+    }
+    if (s->nb_traits < 4u) {
+      s->nb_traits++;
+    }
+    if (suivant != '-') {
+      /* fin de la suite de '-' : "--" et "---" sont des tirets, "-" aussi
+         s'il n'est pas colle au mot qui le precede ; "----" est un trait */
+      if (s->nb_traits == 2u || s->nb_traits == 3u
+          || (s->nb_traits == 1u && s->blanc_avant_traits)) {
+        s->marques |= MARQUE_TIRET;
+      }
+      s->nb_traits = 0u;
+    }
+  } else if (est_tiret(caractere)) {
+    s->marques |= MARQUE_TIRET;
+  } else if (est_guillemet_ouvrant(caractere)
+             || (est_guillemet_ambigu(caractere)
+                 && !ferme_guillemet_ambigu(suivant))) {
+    s->marques |= MARQUE_OUVRE_GUILLEMET;
+  } else if (est_guillemet_fermant(caractere) || est_guillemet_ambigu(caractere)) {
+    s->marques |= MARQUE_FERME_GUILLEMET;
+  }
+}
+
 
 /* ======================================================================== */
 /*               Premier parcours : marques Gutenberg et accents            */
@@ -448,8 +536,7 @@ static bool ajouter_lettre(iterateur_mots_t *it, long point_code,
     utf8[1] = (char)(0x80 | (point_code & 0x3F));
     taille = 2u;
   }
-  return ajouter_octets(&it->mot, &it->longueur, &it->capacite, lettres,
-                        nb_lettres)
+  return ajouter_octets(&it->mot, &it->longueur, &it->capacite, lettres, nb_lettres)
          && ajouter_octets(&it->graphie, &it->longueur_graphie,
                            &it->capacite_graphie, utf8, taille);
 }
@@ -504,7 +591,11 @@ iterateur_mots_t *iterateur_mots_creer(const char *chemin_fichier)
       it->caractere_suivant = AUCUN_CARACTERE;
       it->nb_octets_rendus = 0;
       it->mot_disponible = false;
+      it->commence = false;
+      it->phrase_par_ligne = false;
       it->liaison = LIAISON_ESPACE;
+      it->marques = MARQUE_AUCUNE;
+      it->marques_en_attente = MARQUE_AUCUNE;
       it->ponctuation = PONCTUATION_AUCUNE;
       it->termine = false;
       it->erreur = 0;
@@ -529,6 +620,13 @@ void iterateur_mots_detruire(iterateur_mots_t **iterateur)
   POSTCONDITION(*iterateur == NULL);
 }
 
+void iterateur_mots_phrase_par_ligne(iterateur_mots_t *iterateur, bool actif)
+{
+  PRECONDITION(iterateur != NULL);
+  PRECONDITION(!iterateur->commence);
+  iterateur->phrase_par_ligne = actif;
+}
+
 int iterateur_mots_erreur(const iterateur_mots_t *iterateur)
 {
   PRECONDITION(iterateur != NULL);
@@ -549,6 +647,14 @@ liaison_t iterateur_mots_liaison(const iterateur_mots_t *iterateur)
   return iterateur->liaison;
 }
 
+unsigned int iterateur_mots_marques(const iterateur_mots_t *iterateur)
+{
+  PRECONDITION(iterateur != NULL);
+  PRECONDITION(iterateur->mot_disponible);
+  POSTCONDITION(iterateur->marques <= MARQUES_TOUTES);
+  return iterateur->marques;
+}
+
 ponctuation_t iterateur_mots_ponctuation(const iterateur_mots_t *iterateur)
 {
   PRECONDITION(iterateur != NULL);
@@ -562,8 +668,7 @@ bool iterateur_mots_accentue(const iterateur_mots_t *iterateur)
   return iterateur->accentue;
 }
 
-const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
-                                   bool *fin_phrase)
+const char *iterateur_mots_suivant(iterateur_mots_t *iterateur, bool *fin_phrase)
 {
   iterateur_mots_t *it = iterateur;
   const char *resultat = NULL;
@@ -584,7 +689,10 @@ const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
   bool suspension = false;
   unsigned int nb_points = 0u;
   unsigned int nb_sauts_ligne;
+  unsigned int nb_sauts_fin;
   unsigned int nb_separateurs = 0u;
+  separateurs_t avant = { MARQUE_AUCUNE, 0u, false };
+  separateurs_t apres = { MARQUE_AUCUNE, 0u, false };
   long premier = AUCUN_CARACTERE;
   long caractere = FIN_FICHIER;
   long point_code;
@@ -594,16 +702,26 @@ const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
   PRECONDITION(iterateur != NULL);
 
   it->mot_disponible = false;
+  it->commence = true;
   if (!it->termine) {
     /* 1. Recherche du debut du mot (au debut du fichier : sinon le
           caractere suivant est deja une lettre, lue par anticipation lors
-          de l'appel precedent) */
-    do {
-      caractere = lire_caractere(it);
+          de l'appel precedent). Le debut du fichier est un debut de ligne. */
+    avant.marques = it->marques_en_attente;
+    precedent = '\n';
+    caractere = lire_caractere(it);
+    if (caractere != FIN_FICHIER) {
+      nb_lettres = translitterer(caractere, lettres, &initiale_majuscule);
+    }
+    while (caractere != FIN_FICHIER && nb_lettres == 0u) {
+      suivant = lire_caractere(it);
+      observer_separateur(&avant, caractere, precedent, suivant);
+      precedent = caractere;
+      caractere = suivant;
       if (caractere != FIN_FICHIER) {
         nb_lettres = translitterer(caractere, lettres, &initiale_majuscule);
       }
-    } while (caractere != FIN_FICHIER && nb_lettres == 0u);
+    }
 
     if (caractere == FIN_FICHIER) {
       it->termine = true;
@@ -633,10 +751,14 @@ const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
                     || (tout_en_majuscules && strcmp(it->mot, "mm") == 0);
       premier_separateur = true;
       nb_sauts_ligne = 0u;
+      nb_sauts_fin = it->phrase_par_ligne ? 1u : 2u;
       precedent = AUCUN_CARACTERE;
       while (it->erreur == 0 && caractere != FIN_FICHIER && nb_lettres == 0u) {
         suivant = lire_caractere(it);
-        nb_separateurs++;
+        observer_separateur(&apres, caractere, precedent, suivant);
+        if (nb_separateurs < 2u) {
+          nb_separateurs++;                 /* 2 signifie "plusieurs" */
+        }
         if (nb_separateurs == 1u) {
           premier = caractere;
         }
@@ -660,9 +782,12 @@ const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
           }
           nb_sauts_ligne = 0u;
         } else if (caractere == '\n') {
-          nb_sauts_ligne++;
-          if (nb_sauts_ligne >= 2u) {
-            fin = true;                     /* ligne vide */
+          if (nb_sauts_ligne < 2u) {
+            nb_sauts_ligne++;
+          }
+          if (nb_sauts_ligne >= nb_sauts_fin) {
+            fin = true;                     /* ligne vide (ou fin de ligne
+                                               en lecture par ligne) */
           }
         } else if (!est_blanc(caractere)) {
           nb_sauts_ligne = 0u;
@@ -715,6 +840,9 @@ const char *iterateur_mots_suivant(iterateur_mots_t *iterateur,
         } else if (virgule) {
           it->liaison = LIAISON_VIRGULE;
         }
+        /* marques : celles lues devant ce mot ; celles lues apres lui attendent le mot suivant */
+        it->marques = avant.marques;
+        it->marques_en_attente = apres.marques;
         it->mot_disponible = true;
         resultat = it->mot;
       }
@@ -762,6 +890,49 @@ bool repertoire_graphie_valide(const char *graphie, const char *cle)
   return valide && *c == '\0';
 }
 
+char *repertoire_cle(const char *graphie)
+{
+  const unsigned char *octets = (const unsigned char *)graphie;
+  char *cle = NULL;
+  char lettres[2];
+  size_t longueur = 0u;
+  size_t nb;
+  size_t i;
+  long point_code;
+  bool majuscule;
+
+  PRECONDITION(graphie != NULL);
+
+  if (!lexique_graphie_valide(graphie)) {
+    errno = EINVAL;
+  } else {
+    /* chaque lettre (1 ou 2 octets) donne au plus 2 lettres de la cle */
+    cle = malloc((2u * strlen(graphie)) + 1u);
+    if (cle == NULL) {
+      errno = ENOMEM;
+    } else {
+      while (*octets != '\0') {
+        if (*octets < 0x80u) {
+          point_code = *octets;
+          octets++;
+        } else {
+          point_code = ((long)(octets[0] & 0x1Fu) << 6) | (long)(octets[1] & 0x3Fu);
+          octets += 2;
+        }
+        nb = translitterer(point_code, lettres, &majuscule);
+        for (i = 0u; i < nb; i++) {
+          cle[longueur] = lettres[i];
+          longueur++;
+        }
+      }
+      cle[longueur] = '\0';
+    }
+  }
+  POSTCONDITION(cle == NULL || (cle[0] != '\0' && hachage_mot_valide(cle)
+                                && repertoire_graphie_valide(graphie, cle)));
+  return cle;
+}
+
 
 /* ======================================================================== */
 /*                         Fichiers d'un repertoire                         */
@@ -782,8 +953,7 @@ static bool ajouter_a_liste(liste_fichiers_t *liste, char *chemin)
   bool succes = true;
 
   if (liste->nb == liste->capacite) {
-    nouvelle_capacite = (liste->capacite == 0u)
-                        ? CAPACITE_LISTE_INITIALE : 2u * liste->capacite;
+    nouvelle_capacite = (liste->capacite == 0u) ? CAPACITE_LISTE_INITIALE : 2u * liste->capacite;
     chemins = NULL;
     if (nouvelle_capacite <= SIZE_MAX / sizeof(char *)) {
       chemins = realloc(liste->chemins, nouvelle_capacite * sizeof(char *));
@@ -802,8 +972,7 @@ static bool ajouter_a_liste(liste_fichiers_t *liste, char *chemin)
   return succes;
 }
 
-/** Comparaison de deux chemins (qsort) : ordre des octets, independant de
-    la langue du systeme. */
+/** Comparaison de deux chemins (qsort) : ordre des octets, independant de la langue du systeme. */
 static int comparer_chemins(const void *a, const void *b)
 {
   return strcmp(*(char *const *)a, *(char *const *)b);
@@ -814,10 +983,8 @@ static char *joindre_chemin(const char *repertoire, const char *nom)
 {
   size_t longueur_repertoire = strlen(repertoire);
   size_t longueur_nom = strlen(nom);
-  bool separateur = (longueur_repertoire > 0u
-                     && repertoire[longueur_repertoire - 1u] != '/');
-  char *chemin = malloc(longueur_repertoire + (separateur ? 1u : 0u)
-                        + longueur_nom + 1u);
+  bool separateur = (longueur_repertoire > 0u && repertoire[longueur_repertoire - 1u] != '/');
+  char *chemin = malloc(longueur_repertoire + (separateur ? 1u : 0u) + longueur_nom + 1u);
 
   if (chemin != NULL) {
     memcpy(chemin, repertoire, longueur_repertoire);
@@ -926,6 +1093,84 @@ char **repertoire_lister_fichiers(const char *chemin_repertoire, bool recursif, 
   return liste.chemins;
 }
 
+/** Copie d'une chaine (a liberer avec free), ou NULL si la memoire manque. */
+static char *copier_chaine(const char *chaine)
+{
+  size_t taille = strlen(chaine) + 1u;
+  char *copie = malloc(taille);
+
+  if (copie != NULL) {
+    memcpy(copie, chaine, taille);
+  }
+  return copie;
+}
+
+/**
+ * Ajoute a la liste les fichiers designes par un chemin du corpus : le
+ * fichier lui-meme, ou les fichiers du repertoire, tries. Renvoie 0 ou un
+ * code errno.
+ */
+static int lister_chemin(const char *chemin, bool recursif, liste_fichiers_t *liste)
+{
+  struct stat informations;
+  size_t debut = liste->nb;
+  char *copie;
+  int erreur = 0;
+
+  if (stat(chemin, &informations) != 0) {
+    erreur = errno;
+  } else if (S_ISDIR(informations.st_mode)) {
+    erreur = lister(chemin, recursif, 0u, liste);
+    if (erreur == 0 && liste->nb - debut > 1u) {
+      qsort(liste->chemins + debut, liste->nb - debut, sizeof(char *), comparer_chemins);
+    }
+  } else if (!S_ISREG(informations.st_mode)) {
+    erreur = EINVAL;                        /* tube, peripherique, ... */
+  } else {
+    copie = copier_chaine(chemin);
+    if (copie == NULL || !ajouter_a_liste(liste, copie)) {
+      free(copie);
+      erreur = ENOMEM;
+    }
+  }
+  return erreur;
+}
+
+char **repertoire_lister_corpus(const char *const *chemins, size_t nb_chemins,
+                                bool recursif, size_t *nb_fichiers)
+{
+  liste_fichiers_t liste = { NULL, 0u, 0u };
+  int erreur = 0;
+  size_t i;
+
+  PRECONDITION(chemins != NULL);
+  PRECONDITION(nb_chemins >= 1u);
+  PRECONDITION(nb_fichiers != NULL);
+
+  for (i = 0u; erreur == 0 && i < nb_chemins; i++) {
+    PRECONDITION(chemins[i] != NULL);
+    erreur = lister_chemin(chemins[i], recursif, &liste);
+  }
+  if (erreur == 0 && liste.chemins == NULL) {
+    /* corpus sans fichier : tableau vide mais non NULL */
+    liste.chemins = malloc(sizeof(char *));
+    if (liste.chemins == NULL) {
+      erreur = ENOMEM;
+    }
+  }
+  if (erreur == 0) {
+    *nb_fichiers = liste.nb;
+  } else {
+    for (i = 0u; i < liste.nb; i++) {
+      free(liste.chemins[i]);
+    }
+    free(liste.chemins);
+    liste.chemins = NULL;
+    errno = erreur;
+  }
+  return liste.chemins;
+}
+
 void repertoire_liberer_fichiers(char ***fichiers, size_t nb_fichiers)
 {
   size_t i;
@@ -951,6 +1196,9 @@ typedef struct {
   hachage_t *mots;
   markov_t *chaine;
   const repertoire_options_t *options;
+  langue_detecteur_t *detecteur;  /* NULL sans filtre de langue */
+  size_t phrase;                  /* numero, dans le corpus, de la phrase en cours de lecture */
+  repertoire_bilan_t bilan;
 } apprentissage_t;
 
 /** Etat de lecture d'une phrase. */
@@ -958,7 +1206,21 @@ typedef struct {
   unsigned int mot;        /* mot precedent (0 en debut de phrase) */
   unsigned int etat;       /* etat precedent de la chaine */
   liaison_t liaison;       /* separateur apres le mot precedent */
+  unsigned int fenetre[REPERTOIRE_ORDRE_MAX];  /* derniers mots de la phrase (ordre >= 3) */
 } phrase_t;
+
+/** Replace l'etat de lecture au debut d'une phrase. */
+static void debuter_phrase(phrase_t *phrase)
+{
+  unsigned int r;
+
+  phrase->mot = REPERTOIRE_DEBUT_PHRASE;
+  phrase->etat = REPERTOIRE_DEBUT_PHRASE;
+  phrase->liaison = LIAISON_ESPACE;
+  for (r = 0u; r < REPERTOIRE_ORDRE_MAX; r++) {
+    phrase->fenetre[r] = REPERTOIRE_DEBUT_PHRASE;
+  }
+}
 
 /**
  * Cree, dans les structures synchronisees avec la table des mots, l'entree
@@ -979,6 +1241,29 @@ static bool ajouter_nouveau_mot(apprentissage_t *a, unsigned int mot)
     succes = (markov_ajouter_etat(o->ponctuation) == REPERTOIRE_NB_FINS + mot);
   }
   return succes;
+}
+
+/**
+ * Etat de la chaine a l'ordre k >= 3 apres la lecture du mot identifiant :
+ * le k-uplet des k derniers mots (la fenetre est decalee d'un mot). Un
+ * nouvel etat est ajoute a la chaine. Renvoie HACHAGE_ABSENT en cas d'echec.
+ */
+static unsigned int etat_nuplet(apprentissage_t *a, phrase_t *phrase, unsigned int identifiant)
+{
+  const repertoire_options_t *o = a->options;
+  unsigned int nb_nuplets = hachage_nuplets_nb(o->nuplets);
+  unsigned int etat;
+  unsigned int r;
+
+  for (r = 0u; r + 1u < o->ordre; r++) {
+    phrase->fenetre[r] = phrase->fenetre[r + 1u];
+  }
+  phrase->fenetre[o->ordre - 1u] = identifiant;
+  etat = hachage_nuplets_ajouter(o->nuplets, phrase->fenetre);
+  if (etat == nb_nuplets && markov_ajouter_etat(a->chaine) != etat) {
+    etat = HACHAGE_ABSENT;
+  }
+  return etat;
 }
 
 /**
@@ -1026,13 +1311,18 @@ static bool traiter_occurrence(apprentissage_t *a,
       etat = bigramme;
     }
   }
-  /* graphie, casse et liaison de cette occurrence */
+  /* k-uplet des k derniers mots : etat de la chaine a l'ordre k >= 3 */
+  if (succes && o->ordre >= 3u) {
+    etat = etat_nuplet(a, phrase, identifiant);
+    succes = (etat != HACHAGE_ABSENT);
+  }
+  /* graphie, casse, liaison et marques de dialogue de cette occurrence */
   if (succes && o->lexique != NULL) {
     succes = lexique_observer(o->lexique, bigramme,
                               iterateur_mots_graphie(it),
                               iterateur_mots_accentue(it),
                               phrase->mot == REPERTOIRE_DEBUT_PHRASE,
-                              phrase->liaison);
+                              phrase->liaison, iterateur_mots_marques(it));
   }
   /* (b) poids(etat precedent -> etat) + 1, le debut de phrase etant 0 */
   if (succes) {
@@ -1040,26 +1330,46 @@ static bool traiter_occurrence(apprentissage_t *a,
   }
   if (succes && fin_phrase) {
     /* fin de phrase : poids(etat -> 0) + 1 et ponctuation finale */
-    succes = markov_augmenter_poids(a->chaine, etat,
-                                    REPERTOIRE_DEBUT_PHRASE, 1u);
+    succes = markov_augmenter_poids(a->chaine, etat, REPERTOIRE_DEBUT_PHRASE, 1u);
     if (succes && o->ponctuation != NULL) {
       ponctuation = iterateur_mots_ponctuation(it);
-      if (ponctuation == PONCTUATION_AUCUNE) {
+      if (ponctuation == PONCTUATION_AUCUNE && !o->phrase_par_ligne) {
         ponctuation = PONCTUATION_POINT;
       }
       succes = markov_augmenter_poids(o->ponctuation,
                                       REPERTOIRE_NB_FINS + identifiant,
                                       (unsigned int)ponctuation, 1u);
     }
-    phrase->mot = REPERTOIRE_DEBUT_PHRASE;
-    phrase->etat = REPERTOIRE_DEBUT_PHRASE;
-    phrase->liaison = LIAISON_ESPACE;
+    debuter_phrase(phrase);
   } else if (succes) {
     phrase->mot = identifiant;
     phrase->etat = etat;
     phrase->liaison = iterateur_mots_liaison(it);
   }
   return succes;
+}
+
+/** Ouvre un fichier du corpus avec le mode de lecture des options. */
+static iterateur_mots_t *ouvrir_fichier(const apprentissage_t *a, const char *chemin)
+{
+  iterateur_mots_t *it = iterateur_mots_creer(chemin);
+
+  if (it != NULL) {
+    iterateur_mots_phrase_par_ligne(it, a->options->phrase_par_ligne);
+  }
+  return it;
+}
+
+/**
+ * Indique si la phrase en cours de lecture doit etre apprise : toujours
+ * sans filtre de langue ; sinon selon le detecteur (une phrase qu'il n'a
+ * pas vue, le fichier ayant change entre les deux lectures, est gardee).
+ */
+static bool phrase_a_apprendre(const apprentissage_t *a)
+{
+  return a->detecteur == NULL
+         || a->phrase >= langue_detecteur_nb_phrases(a->detecteur)
+         || langue_detecteur_phrase_gardee(a->detecteur, a->phrase);
 }
 
 /**
@@ -1070,21 +1380,40 @@ static bool apprendre_fichier(apprentissage_t *a, const char *chemin)
 {
   iterateur_mots_t *it;
   const char *mot;
-  phrase_t phrase = { REPERTOIRE_DEBUT_PHRASE, REPERTOIRE_DEBUT_PHRASE,
-                      LIAISON_ESPACE };
+  phrase_t phrase;
   bool fin_phrase = false;
+  bool debut_phrase = true;
+  bool garder = true;
   bool succes;
   int erreur = 0;
 
-  it = iterateur_mots_creer(chemin);
+  debuter_phrase(&phrase);
+  it = ouvrir_fichier(a, chemin);
   succes = (it != NULL);
   if (!succes) {
     erreur = errno;
   }
   while (succes && (mot = iterateur_mots_suivant(it, &fin_phrase)) != NULL) {
-    succes = traiter_occurrence(a, it, mot, fin_phrase, &phrase);
-    if (!succes) {
-      erreur = errno;
+    if (debut_phrase) {
+      garder = phrase_a_apprendre(a);
+      debut_phrase = false;
+    }
+    a->bilan.nb_mots++;
+    if (garder) {
+      succes = traiter_occurrence(a, it, mot, fin_phrase, &phrase);
+      if (!succes) {
+        erreur = errno;
+      }
+    } else {
+      a->bilan.nb_mots_ecartes++;
+    }
+    if (fin_phrase) {
+      a->bilan.nb_phrases++;
+      if (!garder) {
+        a->bilan.nb_phrases_ecartees++;
+      }
+      a->phrase++;
+      debut_phrase = true;
     }
   }
   if (succes && iterateur_mots_erreur(it) != 0) {
@@ -1099,12 +1428,66 @@ static bool apprendre_fichier(apprentissage_t *a, const char *chemin)
 }
 
 /**
- * Cree les entrees initiales : mot 0 = "", etat 0, paire (0, 0), etats de
- * ponctuation. Renvoie false si la memoire manque.
+ * Premiere lecture d'un fichier, pour le filtre de langue : donne ses mots
+ * au detecteur. Renvoie false en cas d'erreur (errno indique la cause).
+ */
+static bool observer_fichier(apprentissage_t *a, const char *chemin)
+{
+  iterateur_mots_t *it;
+  const char *mot;
+  bool fin_phrase = false;
+  bool succes;
+  int erreur = 0;
+
+  it = ouvrir_fichier(a, chemin);
+  succes = (it != NULL);
+  if (!succes) {
+    erreur = errno;
+  }
+  while (succes && (mot = iterateur_mots_suivant(it, &fin_phrase)) != NULL) {
+    succes = langue_detecteur_ajouter_mot(a->detecteur, mot, fin_phrase);
+    if (!succes) {
+      erreur = errno;
+    }
+  }
+  if (succes && iterateur_mots_erreur(it) != 0) {
+    erreur = iterateur_mots_erreur(it);
+    succes = false;
+  }
+  iterateur_mots_detruire(&it);
+  if (succes) {
+    langue_detecteur_fin_texte(a->detecteur);
+  } else {
+    errno = erreur;
+  }
+  return succes;
+}
+
+/**
+ * Filtre de langue : cree le detecteur, lui donne tous les fichiers et
+ * conclut. Renvoie false en cas d'erreur (errno indique la cause).
+ */
+static bool detecter_langues(apprentissage_t *a, char *const *fichiers, size_t nb_fichiers)
+{
+  size_t i;
+  bool succes;
+
+  a->detecteur = langue_detecteur_creer();
+  succes = (a->detecteur != NULL);
+  for (i = 0u; succes && i < nb_fichiers; i++) {
+    succes = observer_fichier(a, fichiers[i]);
+  }
+  return succes && langue_detecteur_conclure(a->detecteur);
+}
+
+/**
+ * Cree les entrees initiales : mot 0 = "", etat 0, paire (0, 0), n-uplet
+ * (0, ..., 0), etats de ponctuation. Renvoie false si la memoire manque.
  */
 static bool initialiser(apprentissage_t *a)
 {
   const repertoire_options_t *o = a->options;
+  const unsigned int zeros[REPERTOIRE_ORDRE_MAX] = { 0u };
   unsigned int p;
   bool succes;
 
@@ -1113,26 +1496,44 @@ static bool initialiser(apprentissage_t *a)
   if (succes && o->lexique != NULL) {
     succes = (lexique_ajouter_mot(o->lexique) == REPERTOIRE_DEBUT_PHRASE);
   }
-  for (p = 0u; succes && o->ponctuation != NULL
-               && p <= REPERTOIRE_NB_FINS; p++) {
-    /* etats 0 .. NB_FINS - 1 : ponctuations ; etat NB_FINS : mot 0 */
+  for (p = 0u; succes && o->ponctuation != NULL && p <= REPERTOIRE_NB_FINS; p++) {
+    /* etats 0 .. NB_FINS - 1 : fins de phrase ; etat NB_FINS : mot 0 */
     succes = (markov_ajouter_etat(o->ponctuation) == p);
   }
   if (succes && o->bigrammes != NULL) {
-    succes = (hachage_paires_ajouter(o->bigrammes, REPERTOIRE_DEBUT_PHRASE,
-                                     REPERTOIRE_DEBUT_PHRASE) == 0u);
+    succes = (hachage_paires_ajouter(o->bigrammes, REPERTOIRE_DEBUT_PHRASE, REPERTOIRE_DEBUT_PHRASE) == 0u);
     if (succes && o->lexique != NULL) {
-      succes = (lexique_ajouter_bigramme(o->lexique, REPERTOIRE_DEBUT_PHRASE)
-                == 0u);
+      succes = (lexique_ajouter_bigramme(o->lexique, REPERTOIRE_DEBUT_PHRASE) == 0u);
     }
+  }
+  if (succes && o->nuplets != NULL) {
+    succes = (hachage_nuplets_ajouter(o->nuplets, zeros) == 0u);
   }
   return succes;
 }
 
-markov_t *repertoire_apprendre(const char *chemin_repertoire,
-                               unsigned int graine, hachage_t *mots,
-                               const repertoire_options_t *options)
+/** Nombre d'etats attendu de la chaine apprise, selon l'ordre. */
+static unsigned int nb_etats_attendu(const apprentissage_t *a)
 {
+  const repertoire_options_t *o = a->options;
+  unsigned int nb;
+
+  if (o->ordre == 1u) {
+    nb = hachage_nb_mots(a->mots);
+  } else if (o->ordre == 2u) {
+    nb = hachage_paires_nb(o->bigrammes);
+  } else {
+    nb = hachage_nuplets_nb(o->nuplets);
+  }
+  return nb;
+}
+
+markov_t *repertoire_apprendre_corpus(const char *const *chemins,
+                                      size_t nb_chemins, unsigned int graine,
+                                      hachage_t *mots,
+                                      const repertoire_options_t *options)
+{
+  const repertoire_bilan_t bilan_vide = { 0u, 0u, 0u, 0u, 0u, LANGUE_INCONNUE };
   apprentissage_t a;
   char **fichiers;
   size_t nb_fichiers = 0u;
@@ -1140,15 +1541,18 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
   bool succes;
   int erreur = 0;
 
-  PRECONDITION(chemin_repertoire != NULL);
+  PRECONDITION(chemins != NULL);
+  PRECONDITION(nb_chemins >= 1u);
   PRECONDITION(mots != NULL);
   PRECONDITION(hachage_nb_mots(mots) == 0u);
   PRECONDITION(options != NULL);
-  PRECONDITION(options->ordre == 1u || options->ordre == 2u);
-  PRECONDITION(options->bigrammes != NULL
-               || (options->ordre == 1u && options->lexique == NULL));
-  PRECONDITION(options->bigrammes == NULL
-               || hachage_paires_nb(options->bigrammes) == 0u);
+  PRECONDITION(options->ordre >= 1u && options->ordre <= REPERTOIRE_ORDRE_MAX);
+  PRECONDITION(options->bigrammes != NULL || (options->ordre != 2u && options->lexique == NULL));
+  PRECONDITION(options->bigrammes == NULL || hachage_paires_nb(options->bigrammes) == 0u);
+  PRECONDITION((options->nuplets != NULL) == (options->ordre >= 3u));
+  PRECONDITION(options->nuplets == NULL
+               || (hachage_nuplets_taille(options->nuplets) == options->ordre
+                   && hachage_nuplets_nb(options->nuplets) == 0u));
   PRECONDITION(options->lexique == NULL
                || (lexique_nb_mots(options->lexique) == 0u
                    && lexique_nb_bigrammes(options->lexique) == 0u
@@ -1160,15 +1564,21 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
   a.mots = mots;
   a.chaine = NULL;
   a.options = options;
-  /* 1. Liste triee des fichiers (en premier : si le repertoire n'existe
-        pas, les structures fournies ne sont pas modifiees) */
-  fichiers = repertoire_lister_fichiers(chemin_repertoire, options->recursif,
-                                        &nb_fichiers);
+  a.detecteur = NULL;
+  a.phrase = 0u;
+  a.bilan = bilan_vide;
+  /* 1. Liste des fichiers (en premier : si un chemin n'existe pas, les
+        structures fournies ne sont pas modifiees) */
+  fichiers = repertoire_lister_corpus(chemins, nb_chemins, options->recursif, &nb_fichiers);
   succes = (fichiers != NULL);
+  /* 2. Filtre de langue : premiere lecture du corpus */
+  if (succes && options->filtrer_langues) {
+    succes = detecter_langues(&a, fichiers, nb_fichiers);
+  }
   if (!succes) {
     erreur = errno;
   }
-  /* 2. Chaine vide et etat 0 = mot vide = debut de phrase */
+  /* 3. Chaine vide et etat 0 = mot vide = debut de phrase */
   if (succes) {
     a.chaine = markov_creer(graine);
     succes = (a.chaine != NULL && initialiser(&a));
@@ -1176,7 +1586,7 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
       erreur = ENOMEM;
     }
   }
-  /* 3. Apprentissage, fichier par fichier */
+  /* 4. Apprentissage, fichier par fichier */
   for (i = 0u; succes && i < nb_fichiers; i++) {
     succes = apprendre_fichier(&a, fichiers[i]);
     if (!succes) {
@@ -1184,7 +1594,7 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
     }
   }
   repertoire_liberer_fichiers(&fichiers, nb_fichiers);
-  /* 4. Finalisation : les poids deviennent des probabilites */
+  /* 5. Finalisation : les poids deviennent des probabilites */
   if (succes) {
     markov_finaliser(a.chaine);
     if (options->lexique != NULL) {
@@ -1193,25 +1603,41 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
     if (options->ponctuation != NULL) {
       markov_finaliser(options->ponctuation);
     }
-    POSTCONDITION(markov_nb_etats(a.chaine)
-                  == ((options->ordre == 1u)
-                      ? hachage_nb_mots(mots)
-                      : hachage_paires_nb(options->bigrammes)));
+    a.bilan.nb_fichiers = nb_fichiers;
+    if (a.detecteur != NULL) {
+      a.bilan.langue = langue_detecteur_majoritaire(a.detecteur);
+    }
+    if (options->bilan != NULL) {
+      *options->bilan = a.bilan;
+    }
+    POSTCONDITION(markov_nb_etats(a.chaine) == nb_etats_attendu(&a));
     POSTCONDITION(hachage_mot(mots, REPERTOIRE_DEBUT_PHRASE)[0] == '\0');
     POSTCONDITION(options->ponctuation == NULL
                   || markov_nb_etats(options->ponctuation)
                      == REPERTOIRE_NB_FINS + hachage_nb_mots(mots));
+    POSTCONDITION(a.bilan.nb_phrases_ecartees <= a.bilan.nb_phrases
+                  && a.bilan.nb_mots_ecartes <= a.bilan.nb_mots);
   } else {
     markov_detruire(&a.chaine);
+  }
+  langue_detecteur_detruire(&a.detecteur);
+  if (!succes) {
     errno = erreur;
   }
   return a.chaine;
 }
 
-markov_t *repertoire_creer_markov(const char *chemin_repertoire,
-                                  unsigned int graine, hachage_t *mots)
+markov_t *repertoire_apprendre(const char *chemin_repertoire,
+                               unsigned int graine, hachage_t *mots,
+                               const repertoire_options_t *options)
 {
-  const repertoire_options_t options = { 1u, false, NULL, NULL, NULL };
+  PRECONDITION(chemin_repertoire != NULL);
+  return repertoire_apprendre_corpus(&chemin_repertoire, 1u, graine, mots, options);
+}
+
+markov_t *repertoire_creer_markov(const char *chemin_repertoire, unsigned int graine, hachage_t *mots)
+{
+  const repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
 
   PRECONDITION(chemin_repertoire != NULL);
   PRECONDITION(mots != NULL);

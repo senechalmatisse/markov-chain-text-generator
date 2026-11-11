@@ -3,8 +3,9 @@
 Fichier hachage.h
 
 Table de hachage de mots definis sur l'alphabet {a, ..., z} (le mot vide
-est autorise : il sert a representer le debut de phrase), et table de
-hachage de paires d'identifiants (fin du fichier).
+est autorise : il sert a representer le debut de phrase), table de hachage
+de n-uplets d'identifiants et, cas particulier n == 2, table de hachage de
+paires d'identifiants (fin du fichier).
 
 Chaque mot insere recoit un IDENTIFIANT UNIQUE : 0 pour le premier mot
 insere, 1 pour le deuxieme, etc. La table realise donc une bijection entre
@@ -241,22 +242,148 @@ double hachage_sondage_moyen(const hachage_t *h);
 
 
 /* ======================================================================== */
+/*                Table de hachage de n-uplets d'identifiants               */
+/* ======================================================================== */
+
+/*
+Table de hachage de n-uplets (e1, ..., en) d'entiers non signes, la taille n
+etant fixee a la creation de la table. Chaque n-uplet insere recoit un
+identifiant unique : 0 pour le premier, 1 pour le deuxieme, etc.
+Elle sert aux chaines de Markov d'ordre n : un etat est alors le n-uplet
+des n derniers mots lus (cf. repertoire.h).
+
+Choix de conception :
+  - code d'un n-uplet : ses elements sont melanges un a un dans un entier
+    de 64 bits (multiplication par une constante impaire et decalage). Le
+    code n'est pas injectif : deux n-uplets de meme code sont departages
+    par la comparaison de leurs elements ;
+  - position initiale : hachage de Fibonacci du code, comme pour les mots ;
+  - collisions : sondage lineaire, taux de remplissage <= 1/2 ;
+  - chaque n-uplet occupe 4 * n octets pour ses elements, ranges les uns a
+    la suite des autres dans un seul tableau, et au moins deux cases de 4
+    octets dans la table (remplie au plus a moitie) ;
+  - pas de suppression : elle casserait la bijection n-uplets <-> etats.
+
+Notations : nb(t) = hachage_nuplets_nb(t) ; taille(t) = hachage_nuplets_taille(t).
+*/
+
+/** Type abstrait table de n-uplets (structure definie dans hachage.c). */
+typedef struct hachage_nuplets_s hachage_nuplets_t;
+
+/** Taille maximale d'un n-uplet. */
+#define HACHAGE_TAILLE_NUPLET_MAX 64u
+
+/**
+ * @brief  Cree une table de n-uplets vide.
+ * @param  taille      nombre d'elements de chaque n-uplet (le n).
+ * @param  nb_prevus   nombre de n-uplets prevus (0 si inconnu).
+ * @pre    1 <= taille <= HACHAGE_TAILLE_NUPLET_MAX ;
+ *         nb_prevus <= HACHAGE_NB_MOTS_MAX.
+ * @post   si le resultat t est non NULL : nb(t) == 0, taille(t) == taille et
+ *         hachage_nuplets_capacite(t) >= 2 * nb_prevus.
+ * @return la nouvelle table (a liberer avec hachage_nuplets_detruire), ou
+ *         NULL si la memoire manque (errno == ENOMEM).
+ * @note   Complexite : O(capacite).
+ */
+hachage_nuplets_t *hachage_nuplets_creer(unsigned int taille, unsigned int nb_prevus);
+
+/**
+ * @brief  Detruit une table de n-uplets et libere sa memoire.
+ * @pre    t != NULL (*t peut etre NULL : rien n'est fait).
+ * @post   *t == NULL.
+ * @note   Complexite : O(1).
+ */
+void hachage_nuplets_detruire(hachage_nuplets_t **t);
+
+/**
+ * @brief  Ajoute un n-uplet s'il est absent et renvoie son identifiant.
+ * @param  t         la table.
+ * @param  elements  les taille(t) elements du n-uplet (ils sont recopies).
+ * @pre    t != NULL ; elements != NULL et designe taille(t) entiers.
+ * @post   en cas de succes, soit id le resultat :
+ *           - si le n-uplet etait present, id est son identifiant et la
+ *             table est inchangee ;
+ *           - sinon id == ancien(nb(t)) et nb(t) == ancien(nb(t)) + 1 ;
+ *           - hachage_nuplets_element(t, id, r) == elements[r] pour tout
+ *             r < taille(t) ; hachage_nuplets_identifiant(t, elements) == id ;
+ *           - les identifiants des autres n-uplets sont inchanges ;
+ *           - 2 * nb(t) <= hachage_nuplets_capacite(t).
+ *         En cas d'echec : la table contient les memes n-uplets, avec les
+ *         memes identifiants.
+ * @return l'identifiant du n-uplet, ou HACHAGE_ABSENT si la memoire manque
+ *         (errno == ENOMEM) ou si la table contient deja
+ *         HACHAGE_NB_MOTS_MAX n-uplets (errno == ERANGE).
+ * @note   Complexite : O(taille) en moyenne (O(1) amortie pour les
+ *         agrandissements).
+ */
+unsigned int hachage_nuplets_ajouter(hachage_nuplets_t *t, const unsigned int *elements);
+
+/**
+ * @brief  Identifiant d'un n-uplet.
+ * @pre    t != NULL ; elements != NULL et designe taille(t) entiers.
+ * @return l'identifiant (< nb(t)), ou HACHAGE_ABSENT si le n-uplet est
+ *         absent.
+ * @note   Complexite : O(taille) en moyenne.
+ */
+unsigned int hachage_nuplets_identifiant(const hachage_nuplets_t *t, const unsigned int *elements);
+
+/**
+ * @brief  Element de rang donne d'un n-uplet.
+ * @pre    t != NULL ; identifiant < nb(t) ; rang < taille(t).
+ * @return l'element (rang 0 : le premier ; rang taille(t) - 1 : le dernier).
+ * @note   Complexite : O(1).
+ */
+unsigned int hachage_nuplets_element(const hachage_nuplets_t *t,
+                                     unsigned int identifiant,
+                                     unsigned int rang);
+
+/**
+ * @brief  Nombre d'elements de chaque n-uplet de la table.
+ * @pre    t != NULL.
+ * @post   1 <= resultat <= HACHAGE_TAILLE_NUPLET_MAX.
+ * @note   Complexite : O(1).
+ */
+unsigned int hachage_nuplets_taille(const hachage_nuplets_t *t);
+
+/**
+ * @brief  Nombre de n-uplets stockes.
+ * @pre    t != NULL.
+ * @return le nombre de n-uplets ; les identifiants sont 0 .. resultat-1.
+ * @note   Complexite : O(1).
+ */
+unsigned int hachage_nuplets_nb(const hachage_nuplets_t *t);
+
+/**
+ * @brief  Nombre de cases de la table (puissance de 2, au moins 16).
+ * @pre    t != NULL.
+ * @post   resultat >= 2 * nb(t).
+ * @note   Complexite : O(1).
+ */
+size_t hachage_nuplets_capacite(const hachage_nuplets_t *t);
+
+/**
+ * @brief  Nombre moyen de cases examinees pour retrouver un n-uplet present
+ *         (1.0 : aucune collision).
+ * @pre    t != NULL.
+ * @post   resultat >= 1.0 si nb(t) > 0 ; resultat == 0.0 sinon.
+ * @note   Complexite : O(capacite * taille).
+ */
+double hachage_nuplets_sondage_moyen(const hachage_nuplets_t *t);
+
+
+/* ======================================================================== */
 /*                 Table de hachage de paires d'identifiants                */
 /* ======================================================================== */
 
 /*
 Table de hachage de paires (premier, second) d'entiers non signes, par
-exemple des couples de mots consecutifs (bigrammes). Chaque paire inseree
+exemple des couples de mots consecutifs (bigrammes) : c'est une table de
+n-uplets de taille 2, munie de fonctions plus commodes. Chaque paire inseree
 recoit un identifiant unique : 0 pour la premiere, 1 pour la deuxieme, etc.
 Elle sert aux chaines de Markov d'ordre 2 (un etat = une paire de mots) et
 au lexique (graphie et liaison d'un mot selon le mot qui le precede).
-
-Choix de conception :
-  - code de la paire : premier * 2^32 + second sur 64 bits (code injectif :
-    deux paires differentes n'ont jamais le meme code) ;
-  - position initiale : hachage de Fibonacci, comme pour les mots ;
-  - collisions : sondage lineaire, taux de remplissage <= 1/2 ;
-  - chaque paire occupe 8 octets (son code) plus une case de 4 octets.
+Chaque paire occupe 8 octets pour ses deux elements, et au moins deux
+cases de 4 octets dans la table (remplie au plus a moitie).
 
 Notations : nb_paires(p) = hachage_paires_nb(p).
 */

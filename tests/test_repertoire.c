@@ -2,8 +2,10 @@
 Fichier test_repertoire.c
 
 Tests unitaires du module repertoire (cf. src/repertoire.h) : iterateur des
-mots d'un fichier et construction d'une chaine de Markov a partir d'un
-repertoire. Les fichiers sont crees dans des repertoires temporaires.
+mots d'un fichier (mots, graphies, liaisons, marques de dialogue), liste des
+fichiers d'un corpus et construction d'une chaine de Markov (ordre 1 a
+REPERTOIRE_ORDRE_MAX, filtre de langue). Les fichiers sont crees dans des
+repertoires temporaires.
 */
 #define _POSIX_C_SOURCE 200809L
 
@@ -26,8 +28,7 @@ repertoire. Les fichiers sont crees dans des repertoires temporaires.
  * par des espaces ; un '|' colle a la fin d'un mot indique que ce mot doit
  * terminer une phrase. Exemple : "le chat dort| il pleut|".
  */
-static void verifier_lecture(const char *contenu, size_t taille,
-                             const char *attendu)
+static void verifier_lecture(const char *contenu, size_t taille, const char *attendu)
 {
   char *repertoire = creer_repertoire_temporaire();
   char *chemin = chemin_dans(repertoire, "texte.txt");
@@ -142,6 +143,74 @@ static void verifier_details(const char *contenu, const lecture_t *attendus,
   detruire_repertoire_temporaire(repertoire);
 }
 
+/** Mot attendu et marques de dialogue attendues devant lui. */
+typedef struct {
+  const char *mot;
+  unsigned int marques;
+} marque_t;
+
+/** Verifie les mots d'un texte et les marques placees devant chacun. */
+static void verifier_marques(const char *contenu, const marque_t *attendus, size_t nb)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *chemin = chemin_dans(repertoire, "texte.txt");
+  iterateur_mots_t *it;
+  const char *mot;
+  size_t i;
+
+  ecrire_fichier(chemin, contenu);
+  it = iterateur_mots_creer(chemin);
+  assert(it != NULL);
+  for (i = 0u; i < nb; i++) {
+    mot = iterateur_mots_suivant(it, NULL);
+    if (mot == NULL || strcmp(mot, attendus[i].mot) != 0
+        || iterateur_mots_marques(it) != attendus[i].marques) {
+      fprintf(stderr, "\n\"%s\", mot %u : attendu \"%s\" (marques %u)",
+              contenu, (unsigned int)i, attendus[i].mot, attendus[i].marques);
+      if (mot != NULL) {
+        fprintf(stderr, ", obtenu \"%s\" (marques %u)", mot, iterateur_mots_marques(it));
+      }
+      fprintf(stderr, "\n");
+    }
+    assert(mot != NULL && strcmp(mot, attendus[i].mot) == 0);
+    assert(iterateur_mots_marques(it) == attendus[i].marques);
+  }
+  assert(iterateur_mots_suivant(it, NULL) == NULL);
+  iterateur_mots_detruire(&it);
+  free(chemin);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+/** Nombre d'elements d'un tableau. */
+#define NB(tableau) (sizeof(tableau) / sizeof((tableau)[0]))
+
+/* Abreviations des marques de dialogue. */
+#define AUCUNE MARQUE_AUCUNE
+#define FERME MARQUE_FERME_GUILLEMET
+#define TIRET MARQUE_TIRET
+#define OUVRE MARQUE_OUVRE_GUILLEMET
+
+/* Guillemets et tirets en UTF-8. */
+#define GO "\xC2\xAB"          /* guillemet francais ouvrant */
+#define GF "\xC2\xBB"          /* guillemet francais fermant */
+#define CADRATIN "\xE2\x80\x94"
+
+/* Textes courants, pour le filtre de langue. */
+static const char *const TEXTE_FRANCAIS =
+  "Le chat dort sur le toit de la maison. Il regarde les oiseaux qui "
+  "passent dans le ciel. La petite fille ouvre la porte et appelle son "
+  "chat. Elle ne veut pas qu'il reste dehors pendant la nuit. Le chat "
+  "descend du toit et vient pres d'elle. Ils rentrent tous les deux dans "
+  "la cuisine. La mere a prepare une soupe pour le repas du soir. Le pere "
+  "lit un livre au coin du feu. Tout est calme dans la maison et la nuit "
+  "tombe sur le village.\n";
+
+static const char *const TEXTE_ANGLAIS =
+  "The old man walked to the river with his dog. He had not seen the water "
+  "for many years. It was cold and the wind was strong. She said that they "
+  "would come back in the morning. There was a small house on the hill and "
+  "it was empty. We have been here for a long time but nobody came.\n";
+
 /** Identifiant d'un mot dont on sait qu'il est dans la table. */
 static unsigned int id(const hachage_t *mots, const char *mot)
 {
@@ -158,8 +227,7 @@ static unsigned int id(const hachage_t *mots, const char *mot)
 
 static void test_iterateur_phrases_simples(void)
 {
-  verifier_texte("Le chat dort. Le chien mange !",
-                 "le chat dort| le chien mange|");
+  verifier_texte("Le chat dort. Le chien mange !", "le chat dort| le chien mange|");
   verifier_texte("Quoi ?! Non !!! Si.", "quoi| non| si|");
 }
 
@@ -167,8 +235,7 @@ static void test_iterateur_ponctuation_retiree(void)
 {
   verifier_texte("Bonjour, monde ; c'est-a-dire (voila) : \"fin\"",
                  "bonjour monde c est a dire voila fin|");
-  verifier_texte("_Ne jugez point._ [1] {x} <y> * # @ & %",
-                 "ne jugez point| x y|");
+  verifier_texte("_Ne jugez point._ [1] {x} <y> * # @ & %", "ne jugez point| x y|");
   verifier_texte("... debut", "debut|");
 }
 
@@ -228,8 +295,7 @@ static void test_iterateur_mot_tres_long(void)
 static void test_iterateur_fin_de_fichier(void)
 {
   /* le dernier mot du fichier termine la phrase, meme sans ponctuation */
-  verifier_texte("Je compte les jours\nSur mes doigts",
-                 "je compte les jours sur mes doigts|");
+  verifier_texte("Je compte les jours\nSur mes doigts", "je compte les jours sur mes doigts|");
   verifier_texte("Fin\n\n\n", "fin|");
 }
 
@@ -256,8 +322,7 @@ static void test_iterateur_abreviations(void)
 
 static void test_iterateur_nombres(void)
 {
-  verifier_texte("Il a 3.5 ans et 2 chats. En 1815. Fin",
-                 "il a ans et chats| en| fin|");
+  verifier_texte("Il a 3.5 ans et 2 chats. En 1815. Fin", "il a ans et chats| en| fin|");
 }
 
 static void test_iterateur_points_de_suspension(void)
@@ -436,6 +501,188 @@ static void test_iterateur_detruire_en_cours(void)
 
 
 /* ======================================================================== */
+/*                 Iterateur : guillemets, tirets, lignes                   */
+/* ======================================================================== */
+
+static void test_iterateur_guillemets(void)
+{
+  /* guillemets francais : ouvrant devant "viens", fermant devant "puis" */
+  const marque_t francais[] = {
+    { "il", AUCUNE }, { "dit", AUCUNE }, { "viens", OUVRE }, { "ici", AUCUNE },
+    { "puis", FERME }, { "il", AUCUNE }, { "sortit", AUCUNE }
+  };
+  const marque_t droits[] = {
+    { "bonjour", OUVRE }, { "dit", FERME }, { "elle", AUCUNE },
+    { "au", OUVRE }, { "revoir", AUCUNE }
+  };
+  const marque_t anglais[] = {
+    { "hello", OUVRE }, { "he", FERME }, { "said", AUCUNE }
+  };
+  const marque_t allemands[] = {
+    { "hallo", OUVRE }, { "sagte", FERME }, { "er", AUCUNE }
+  };
+  const marque_t suedois[] = {
+    { "hej", OUVRE }, { "sa", FERME }, { "han", AUCUNE }
+  };
+  const marque_t deux_marques[] = { { "oui", OUVRE }, { "non", FERME | OUVRE } };
+  const marque_t mot_cite[] = {
+    { "le", AUCUNE }, { "mot", AUCUNE }, { "respectable", OUVRE }, { "car", FERME }
+  };
+
+  verifier_marques("Il dit: " GO "Viens ici!" GF " Puis il sortit.", francais, NB(francais));
+  /* avec les espaces insecables de la typographie francaise */
+  verifier_marques("Il dit : " GO "\xC2\xA0Viens ici !\xC2\xA0" GF
+                   " Puis il sortit.", francais, NB(francais));
+  /* guillemet droit : ouvrant s'il est colle a ce qui le suit */
+  verifier_marques("\"Bonjour\", dit-elle. \"Au revoir.\"", droits, NB(droits));
+  verifier_marques("\xE2\x80\x9CHello,\xE2\x80\x9D he said.", anglais, NB(anglais));
+  /* en allemand U+201C ferme, en suedois U+201D ouvre : la position decide */
+  verifier_marques("\xE2\x80\x9EHallo\xE2\x80\x9C, sagte er.", allemands, NB(allemands));
+  verifier_marques("\xE2\x80\x9DHej\xE2\x80\x9D, sa han.", suedois, NB(suedois));
+  verifier_marques(GO "Oui" GF " " GO "Non" GF, deux_marques, NB(deux_marques));
+  verifier_marques("le mot \"respectable\"; car", mot_cite, NB(mot_cite));
+}
+
+static void test_iterateur_tirets(void)
+{
+  const marque_t replique[] = {
+    { "oui", TIRET }, { "dit", AUCUNE }, { "il", AUCUNE }
+  };
+  const marque_t un_mot[] = { { "oui", TIRET } };
+  const marque_t deux_repliques[] = { { "oui", TIRET }, { "non", TIRET } };
+  const marque_t incise[] = {
+    { "un", AUCUNE }, { "jour", AUCUNE }, { "il", TIRET },
+    { "pleuvait", AUCUNE }, { "il", TIRET }, { "sortit", AUCUNE }
+  };
+  const marque_t incise_virgule[] = {
+    { "oui", AUCUNE }, { "dit", TIRET }, { "il", AUCUNE }, { "je", TIRET }, { "viens", AUCUNE }
+  };
+  const marque_t isole[] = { { "mot", AUCUNE }, { "mot", TIRET } };
+  const marque_t colle[] = {
+    { "mot", AUCUNE }, { "mot", AUCUNE }, { "peut", AUCUNE }, { "etre", AUCUNE }
+  };
+  const marque_t traits[] = { { "a", AUCUNE }, { "b", AUCUNE }, { "c", TIRET } };
+  const marque_t phrases[] = { { "fin", AUCUNE }, { "non", TIRET } };
+  const marque_t ferme_et_tiret[] = {
+    { "viens", OUVRE }, { "ici", AUCUNE }, { "non", FERME | TIRET }
+  };
+  const marque_t elision[] = { { "l", AUCUNE }, { "eau", AUCUNE } };
+  /* la liaison ne change pas : virgule puis tiret, trait d'union */
+  const lecture_t liaisons[] = {
+    { "oui", "Oui", false, LIAISON_VIRGULE, PONCTUATION_AUCUNE },
+    { "dit", "dit", false, LIAISON_TRAIT_UNION, PONCTUATION_AUCUNE },
+    { "il", "il", true, LIAISON_ESPACE, PONCTUATION_POINT }
+  };
+
+  /* tirets de dialogue : "--" des livres du projet Gutenberg, cadratin,
+     demi-cadratin, '-' seul en debut de ligne */
+  verifier_marques("--Oui, dit-il.", replique, NB(replique));
+  verifier_marques(CADRATIN " Oui, dit-il.", replique, NB(replique));
+  verifier_marques("\xE2\x80\x93Oui.", un_mot, NB(un_mot));
+  verifier_marques("\xE2\x80\x95 Oui.", un_mot, NB(un_mot));
+  verifier_marques("- Oui.\n- Non.", deux_repliques, NB(deux_repliques));
+  verifier_marques("-Oui.\n  -Non.", deux_repliques, NB(deux_repliques));
+  verifier_marques("---Oui.", un_mot, NB(un_mot));
+  /* tirets d'incise, au milieu d'une phrase */
+  verifier_marques("Un jour--il pleuvait--il sortit.", incise, NB(incise));
+  verifier_marques("Oui, --dit-il, --je viens.", incise_virgule,
+                   NB(incise_virgule));
+  verifier_marques("mot - mot", isole, NB(isole));
+  /* un '-' colle au mot qui le precede n'est pas un tiret ; ni le trait
+     d'union ; ni un trait decoratif de quatre '-' ou plus */
+  verifier_marques("mot- mot, peut-etre", colle, NB(colle));
+  verifier_marques("a ---- b --- c", traits, NB(traits));
+  verifier_marques("a ----------- b ---c", traits, NB(traits));
+  /* apres une fin de phrase, les marques sont celles de la phrase suivante */
+  verifier_marques("Fin.\n\n--Non", phrases, NB(phrases));
+  verifier_marques(GO "Viens ici!" GF " --Non", ferme_et_tiret, NB(ferme_et_tiret));
+  verifier_marques("l'eau", elision, NB(elision));
+  verifier_details("Oui, --dit-il.", liaisons, NB(liaisons), false);
+}
+
+/** Mot attendu en lecture "une phrase par ligne". */
+typedef struct {
+  const char *mot;
+  bool fin;
+  ponctuation_t ponctuation;
+} vers_t;
+
+static void test_iterateur_phrase_par_ligne(void)
+{
+  const char *const contenu = "Sur le pont\r\nd'Avignon,\n\nOn y danse. On y\n"
+                              "danse";
+  const vers_t par_ligne[] = {
+    { "sur", false, PONCTUATION_AUCUNE }, { "le", false, PONCTUATION_AUCUNE },
+    { "pont", true, PONCTUATION_AUCUNE }, { "d", false, PONCTUATION_AUCUNE },
+    { "avignon", true, PONCTUATION_AUCUNE },
+    { "on", false, PONCTUATION_AUCUNE }, { "y", false, PONCTUATION_AUCUNE },
+    { "danse", true, PONCTUATION_POINT }, { "on", false, PONCTUATION_AUCUNE },
+    { "y", true, PONCTUATION_AUCUNE }, { "danse", true, PONCTUATION_AUCUNE }
+  };
+  char *repertoire = creer_repertoire_temporaire();
+  char *chemin = chemin_dans(repertoire, "chanson.txt");
+  iterateur_mots_t *it;
+  const char *mot;
+  bool fin;
+  size_t i;
+
+  ecrire_fichier(chemin, contenu);
+  it = iterateur_mots_creer(chemin);
+  assert(it != NULL);
+  iterateur_mots_phrase_par_ligne(it, true);
+  for (i = 0u; i < NB(par_ligne); i++) {
+    mot = iterateur_mots_suivant(it, &fin);
+    assert(mot != NULL && strcmp(mot, par_ligne[i].mot) == 0);
+    assert(fin == par_ligne[i].fin);
+    assert(iterateur_mots_ponctuation(it) == par_ligne[i].ponctuation);
+  }
+  assert(iterateur_mots_suivant(it, NULL) == NULL);
+  iterateur_mots_detruire(&it);
+  /* on peut revenir a la lecture habituelle avant le premier mot : seules
+     la ligne vide, la ponctuation et la fin du fichier finissent une phrase */
+  it = iterateur_mots_creer(chemin);
+  iterateur_mots_phrase_par_ligne(it, true);
+  iterateur_mots_phrase_par_ligne(it, false);
+  iterateur_mots_detruire(&it);
+  free(chemin);
+  detruire_repertoire_temporaire(repertoire);
+  verifier_texte(contenu, "sur le pont d avignon| on y danse| on y danse|");
+}
+
+static void test_cle(void)
+{
+  char *cle;
+
+  cle = repertoire_cle("\xC3\x89t\xC3\xA9");                 /* Ete accentue */
+  assert(cle != NULL && strcmp(cle, "ete") == 0);
+  free(cle);
+  cle = repertoire_cle("\xC5\x92uvre");                      /* OE lie */
+  assert(cle != NULL && strcmp(cle, "oeuvre") == 0);
+  free(cle);
+  cle = repertoire_cle("stra\xC3\x9F" "e");                  /* eszett */
+  assert(cle != NULL && strcmp(cle, "strasse") == 0);
+  free(cle);
+  cle = repertoire_cle("MARIUS");
+  assert(cle != NULL && strcmp(cle, "marius") == 0);
+  free(cle);
+  cle = repertoire_cle("a");
+  assert(cle != NULL && strcmp(cle, "a") == 0);
+  free(cle);
+  /* ce qui n'est pas un mot seul : EINVAL */
+  errno = 0;
+  assert(repertoire_cle("") == NULL && errno == EINVAL);
+  errno = 0;
+  assert(repertoire_cle("l'eau") == NULL && errno == EINVAL);
+  errno = 0;
+  assert(repertoire_cle("deux mots") == NULL && errno == EINVAL);
+  errno = 0;
+  assert(repertoire_cle("abc1") == NULL && errno == EINVAL);
+  errno = 0;
+  assert(repertoire_cle("\xC3") == NULL && errno == EINVAL);  /* UTF-8 coupe */
+}
+
+
+/* ======================================================================== */
 /*                     Chaine de Markov d'un repertoire                     */
 /* ======================================================================== */
 
@@ -587,6 +834,7 @@ static void test_markov_erreurs(void)
 {
   char *repertoire = creer_repertoire_temporaire();
   char *fichier = chemin_dans(repertoire, "texte.txt");
+  char *sous_fichier = chemin_dans(repertoire, "texte.txt/sous");
   char *inexistant = chemin_dans(repertoire, "inexistant");
   hachage_t *mots = hachage_creer(0u);
 
@@ -596,9 +844,9 @@ static void test_markov_erreurs(void)
   assert(repertoire_creer_markov(inexistant, 1u, mots) == NULL);
   assert(errno == ENOENT);
   assert(hachage_nb_mots(mots) == 0u);
-  /* le chemin designe un fichier */
+  /* un composant du chemin est un fichier */
   errno = 0;
-  assert(repertoire_creer_markov(fichier, 1u, mots) == NULL);
+  assert(repertoire_creer_markov(sous_fichier, 1u, mots) == NULL);
   assert(errno == ENOTDIR);
   assert(hachage_nb_mots(mots) == 0u);
   /* fichier illisible (sans objet pour root, qui peut tout lire) */
@@ -611,6 +859,7 @@ static void test_markov_erreurs(void)
   }
   hachage_detruire(&mots);
   free(fichier);
+  free(sous_fichier);
   free(inexistant);
   detruire_repertoire_temporaire(repertoire);
 }
@@ -716,8 +965,7 @@ static void test_lister_fichiers(void)
   char *cible = chemin_dans(racine, "a.txt");
   char *vide = chemin_dans(cache_racine, "vide");
   const char *const directs[] = { "a.txt", "b.txt", "lien_fichier" };
-  const char *const tous[] = { "a.txt", "b.txt", "lien_fichier",
-                               "sous/c.txt", "sous/profond/e.txt" };
+  const char *const tous[] = { "a.txt", "b.txt", "lien_fichier", "sous/c.txt", "sous/profond/e.txt" };
   size_t nb = 99u;
   char **fichiers;
 
@@ -742,8 +990,7 @@ static void test_lister_fichiers(void)
   assert(repertoire_lister_fichiers(cible, false, &nb) == NULL);
   assert(errno == ENOTDIR);
   errno = 0;
-  assert(repertoire_lister_fichiers("/tmp/repertoire_absent_markov", true,
-                                    &nb) == NULL);
+  assert(repertoire_lister_fichiers("/tmp/repertoire_absent_markov", true, &nb) == NULL);
   assert(errno == ENOENT);
   /* sous-repertoire illisible : genant seulement en mode recursif */
   if (geteuid() != 0) {
@@ -803,7 +1050,7 @@ static void test_apprendre_ordre_2(void)
   char *repertoire = creer_repertoire_temporaire();
   hachage_t *mots = hachage_creer(0u);
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
-  repertoire_options_t options = { 2u, false, NULL, NULL, NULL };
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL, false, false, NULL };
   markov_t *m;
   unsigned int le;
   unsigned int chat;
@@ -818,8 +1065,7 @@ static void test_apprendre_ordre_2(void)
   chat = id(mots, "chat");
   chien = id(mots, "chien");
   dort = id(mots, "dort");
-  /* etats = paires : (0,0) (0,le) (le,chat) (chat,dort) (le,chien)
-     (chien,dort) */
+  /* etats = paires : (0,0) (0,le) (le,chat) (chat,dort) (le,chien) (chien,dort) */
   assert(hachage_paires_nb(bigrammes) == 6u);
   assert(markov_nb_etats(m) == 6u);
   assert(hachage_paires_identifiant(bigrammes, 0u, 0u) == 0u);
@@ -843,7 +1089,7 @@ static void test_apprendre_lexique_ponctuation(void)
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
   lexique_t *lexique = lexique_creer();
   markov_t *ponctuation = markov_creer(5u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
   markov_t *m;
   unsigned int oui;
   unsigned int non;
@@ -862,16 +1108,11 @@ static void test_apprendre_lexique_ponctuation(void)
   assert(markov_est_finalisee(ponctuation));
   assert(markov_nb_etats(ponctuation)
          == REPERTOIRE_NB_FINS + hachage_nb_mots(mots));
-  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui,
-                      PONCTUATION_INTERROGATION) == 1u);
-  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui,
-                      PONCTUATION_EXCLAMATION) == 1u);
-  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui,
-                      PONCTUATION_POINT) == 1u);
-  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + non,
-                      PONCTUATION_POINT) == 1u);
-  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + titre,
-                      PONCTUATION_POINT) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui, PONCTUATION_INTERROGATION) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui, PONCTUATION_EXCLAMATION) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + oui, PONCTUATION_POINT) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + non, PONCTUATION_POINT) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + titre, PONCTUATION_POINT) == 1u);
   /* lexique synchronise avec les mots et les paires */
   assert(lexique_est_finalise(lexique));
   assert(lexique_nb_mots(lexique) == hachage_nb_mots(mots));
@@ -879,8 +1120,7 @@ static void test_apprendre_lexique_ponctuation(void)
   assert(strcmp(lexique_variante(lexique, id(mots, "etait"),
                                  lexique_variante_mot(lexique, id(mots, "etait"))),
                 "\xC3\xA9tait") == 0);
-  assert(lexique_liaison(lexique, hachage_paires_identifiant(
-                           bigrammes, id(mots, "c"), id(mots, "etait")))
+  assert(lexique_liaison(lexique, hachage_paires_identifiant(bigrammes, id(mots, "c"), id(mots, "etait")))
          == LIAISON_APOSTROPHE);
   markov_detruire(&m);
   markov_detruire(&ponctuation);
@@ -895,7 +1135,7 @@ static void test_apprendre_recursif(void)
   char *repertoire = creer_repertoire_temporaire();
   char *sous = chemin_dans(repertoire, "sous");
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, true, NULL, NULL, NULL };
+  repertoire_options_t options = { 1u, true, NULL, NULL, NULL, NULL, false, false, NULL };
   markov_t *m;
 
   assert(mkdir(sous, 0700) == 0);
@@ -911,6 +1151,460 @@ static void test_apprendre_recursif(void)
   detruire_repertoire_temporaire(repertoire);
 }
 
+
+/* ======================================================================== */
+/*           Corpus, ordre quelconque, marques, lignes, langues             */
+/* ======================================================================== */
+
+static void test_lister_corpus(void)
+{
+  char *racine = creer_repertoire_temporaire();
+  char *sous = chemin_dans(racine, "sous");
+  char *a = chemin_dans(racine, "a.txt");
+  char *b = chemin_dans(racine, "b.txt");
+  char *c = chemin_dans(sous, "c.txt");
+  char *tube = chemin_dans(racine, "tube");
+  char *absent = chemin_dans(racine, "absent.txt");
+  char *sous_fichier = chemin_dans(racine, "a.txt/x");
+  const char *chemins[3];
+  char **fichiers;
+  size_t nb = 99u;
+
+  assert(mkdir(sous, 0700) == 0);
+  ecrire_fichier(a, "a");
+  ecrire_fichier(b, "b");
+  ecrire_fichier(c, "c");
+  /* un fichier, un repertoire, puis le meme fichier : l'ordre donne est
+     garde, les fichiers du repertoire sont tries, rien n'est dedouble */
+  chemins[0] = b;
+  chemins[1] = racine;
+  chemins[2] = b;
+  fichiers = repertoire_lister_corpus(chemins, 3u, false, &nb);
+  assert(fichiers != NULL && nb == 4u);
+  assert(strcmp(fichiers[0], b) == 0);
+  assert(strcmp(fichiers[1], a) == 0);
+  assert(strcmp(fichiers[2], b) == 0);
+  assert(strcmp(fichiers[3], b) == 0);
+  repertoire_liberer_fichiers(&fichiers, nb);
+  assert(fichiers == NULL);
+  /* recursif : les sous-repertoires du repertoire sont lus aussi */
+  fichiers = repertoire_lister_corpus(chemins, 2u, true, &nb);
+  assert(fichiers != NULL && nb == 4u);
+  assert(strcmp(fichiers[0], b) == 0);
+  assert(strcmp(fichiers[1], a) == 0);
+  assert(strcmp(fichiers[2], b) == 0);
+  assert(strcmp(fichiers[3], c) == 0);
+  repertoire_liberer_fichiers(&fichiers, nb);
+  /* un seul fichier ; un repertoire sans fichier (tableau vide non NULL) */
+  chemins[0] = c;
+  fichiers = repertoire_lister_corpus(chemins, 1u, false, &nb);
+  assert(fichiers != NULL && nb == 1u && strcmp(fichiers[0], c) == 0);
+  repertoire_liberer_fichiers(&fichiers, nb);
+  assert(unlink(c) == 0);
+  chemins[0] = sous;
+  fichiers = repertoire_lister_corpus(chemins, 1u, true, &nb);
+  assert(fichiers != NULL && nb == 0u);
+  repertoire_liberer_fichiers(&fichiers, nb);
+  /* erreurs : chemin absent, composant qui n'est pas un repertoire, tube */
+  chemins[0] = a;
+  chemins[1] = absent;
+  errno = 0;
+  assert(repertoire_lister_corpus(chemins, 2u, false, &nb) == NULL);
+  assert(errno == ENOENT);
+  chemins[1] = sous_fichier;
+  errno = 0;
+  assert(repertoire_lister_corpus(chemins, 2u, false, &nb) == NULL);
+  assert(errno == ENOTDIR);
+  assert(mkfifo(tube, 0600) == 0);
+  chemins[1] = tube;
+  errno = 0;
+  assert(repertoire_lister_corpus(chemins, 2u, false, &nb) == NULL);
+  assert(errno == EINVAL);
+  free(sous);
+  free(a);
+  free(b);
+  free(c);
+  free(tube);
+  free(absent);
+  free(sous_fichier);
+  detruire_repertoire_temporaire(racine);
+}
+
+static void test_apprendre_corpus(void)
+{
+  /* corpus = un fichier seul, puis un fichier et un repertoire */
+  char *repertoire = creer_repertoire_temporaire();
+  char *ailleurs = creer_repertoire_temporaire();
+  char *fichier = chemin_dans(ailleurs, "lettre.txt");
+  const char *chemins[2];
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_bilan_t bilan = { 9u, 9u, 9u, 9u, 9u, LANGUE_FRANCAIS };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  markov_t *m;
+
+  options.bilan = &bilan;
+  ecrire_fichier(fichier, "Cher ami. Viens vite!");
+  creer_fichier_dans(repertoire, "a.txt", "Le chat dort.");
+  creer_fichier_dans(repertoire, "b.txt", "Le chien dort. Il ronfle");
+  /* un fichier donne a la place d'un repertoire */
+  m = repertoire_apprendre(fichier, 1u, mots, &options);
+  assert(m != NULL);
+  assert(hachage_nb_mots(mots) == 5u);       /* "" cher ami viens vite */
+  assert(markov_poids(m, id(mots, "cher"), id(mots, "ami")) == 1u);
+  assert(bilan.nb_fichiers == 1u && bilan.nb_phrases == 2u);
+  assert(bilan.nb_mots == 4u);
+  assert(bilan.nb_phrases_ecartees == 0u && bilan.nb_mots_ecartes == 0u);
+  assert(bilan.langue == LANGUE_INCONNUE);   /* pas de filtre */
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+  /* le fichier puis le repertoire */
+  mots = hachage_creer(0u);
+  chemins[0] = fichier;
+  chemins[1] = repertoire;
+  m = repertoire_apprendre_corpus(chemins, 2u, 1u, mots, &options);
+  assert(m != NULL);
+  assert(id(mots, "cher") == 1u);            /* le fichier est lu d'abord */
+  assert(hachage_contient(mots, "chat") && hachage_contient(mots, "ronfle"));
+  assert(markov_poids(m, id(mots, "le"), id(mots, "chien")) == 1u);
+  assert(markov_poids(m, id(mots, "dort"), REPERTOIRE_DEBUT_PHRASE) == 2u);
+  assert(bilan.nb_fichiers == 3u && bilan.nb_phrases == 5u);
+  assert(bilan.nb_mots == 12u);
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+  /* un echec ne modifie pas le bilan */
+  mots = hachage_creer(0u);
+  chemins[1] = "/tmp/repertoire_absent_markov";
+  bilan.nb_fichiers = 77u;
+  errno = 0;
+  assert(repertoire_apprendre_corpus(chemins, 2u, 1u, mots, &options) == NULL);
+  assert(errno == ENOENT);
+  assert(bilan.nb_fichiers == 77u);
+  assert(hachage_nb_mots(mots) == 0u);
+  hachage_detruire(&mots);
+  free(fichier);
+  detruire_repertoire_temporaire(ailleurs);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+/** Identifiant d'un triplet dont on sait qu'il est dans la table. */
+static unsigned int triplet(const hachage_nuplets_t *t, unsigned int a,
+                            unsigned int b, unsigned int c)
+{
+  unsigned int elements[3];
+  unsigned int identifiant;
+
+  elements[0] = a;
+  elements[1] = b;
+  elements[2] = c;
+  identifiant = hachage_nuplets_identifiant(t, elements);
+  assert(identifiant != HACHAGE_ABSENT);
+  return identifiant;
+}
+
+static void test_apprendre_ordre_3(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  hachage_nuplets_t *nuplets = hachage_nuplets_creer(3u, 0u);
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  markov_t *m;
+  unsigned int le;
+  unsigned int chat;
+  unsigned int chien;
+  unsigned int dort;
+
+  options.nuplets = nuplets;
+  creer_fichier_dans(repertoire, "a.txt", "Le chat dort. Le chien dort. Dort.");
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL && markov_est_finalisee(m));
+  le = id(mots, "le");
+  chat = id(mots, "chat");
+  chien = id(mots, "chien");
+  dort = id(mots, "dort");
+  /* etats = triplets : (0,0,0) (0,0,le) (0,le,chat) (le,chat,dort)
+     (0,le,chien) (le,chien,dort) (0,0,dort) */
+  assert(hachage_nuplets_nb(nuplets) == 7u);
+  assert(markov_nb_etats(m) == 7u);
+  assert(triplet(nuplets, 0u, 0u, 0u) == 0u);
+  assert(markov_poids(m, 0u, triplet(nuplets, 0u, 0u, le)) == 2u);
+  assert(markov_poids(m, 0u, triplet(nuplets, 0u, 0u, dort)) == 1u);
+  assert(markov_poids(m, triplet(nuplets, 0u, 0u, le),
+                      triplet(nuplets, 0u, le, chat)) == 1u);
+  assert(markov_poids(m, triplet(nuplets, 0u, le, chien),
+                      triplet(nuplets, le, chien, dort)) == 1u);
+  assert(markov_poids(m, triplet(nuplets, le, chat, dort), 0u) == 1u);
+  assert(markov_poids(m, triplet(nuplets, 0u, 0u, dort), 0u) == 1u);
+  assert(markov_nb_voisins(m, triplet(nuplets, 0u, 0u, le)) == 2u);
+  /* la fenetre repart de zero a chaque phrase : pas de (chat,dort,le) */
+  assert(markov_nb_voisins(m, triplet(nuplets, le, chien, dort)) == 1u);
+  markov_detruire(&m);
+  hachage_nuplets_detruire(&nuplets);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_tous_les_ordres(void)
+{
+  /* une seule phrase de 10 mots differents : a tout ordre, la chaine est un
+     chemin unique 0 -> e1 -> ... -> e10 -> 0 qui redonne la phrase */
+  const char *const phrase = "un deux trois quatre cinq six sept huit neuf "
+                             "dix.";
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots;
+  hachage_paires_t *bigrammes;
+  hachage_nuplets_t *nuplets;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  markov_t *m;
+  unsigned int ordre;
+  unsigned int etat;
+  unsigned int mot;
+  unsigned int rang;
+
+  creer_fichier_dans(repertoire, "a.txt", phrase);
+  for (ordre = 1u; ordre <= REPERTOIRE_ORDRE_MAX; ordre++) {
+    mots = hachage_creer(0u);
+    bigrammes = hachage_paires_creer(0u);
+    nuplets = (ordre >= 3u) ? hachage_nuplets_creer(ordre, 0u) : NULL;
+    options.ordre = ordre;
+    options.bigrammes = bigrammes;
+    options.nuplets = nuplets;
+    m = repertoire_apprendre(repertoire, 3u, mots, &options);
+    assert(m != NULL);
+    assert(markov_nb_etats(m) == 11u);
+    assert(hachage_paires_nb(bigrammes) == 11u);
+    etat = REPERTOIRE_DEBUT_PHRASE;
+    for (rang = 1u; rang <= 10u; rang++) {
+      assert(markov_nb_voisins(m, etat) == 1u);
+      etat = markov_deplacer(m, etat);
+      /* dernier mot de l'etat : le mot de rang rang (identifiant rang) */
+      if (ordre == 1u) {
+        mot = etat;
+      } else if (ordre == 2u) {
+        mot = hachage_paires_second(bigrammes, etat);
+      } else {
+        mot = hachage_nuplets_element(nuplets, etat, ordre - 1u);
+        /* l'avant-dernier element est le mot precedent (0 au debut) */
+        assert(hachage_nuplets_element(nuplets, etat, ordre - 2u) == rang - 1u);
+      }
+      assert(mot == rang);
+    }
+    assert(markov_deplacer(m, etat) == REPERTOIRE_DEBUT_PHRASE);
+    markov_detruire(&m);
+    hachage_nuplets_detruire(&nuplets);
+    hachage_paires_detruire(&bigrammes);
+    hachage_detruire(&mots);
+  }
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_marques(void)
+{
+  /* le lexique retient les tirets et les guillemets majoritaires */
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  hachage_paires_t *bigrammes = hachage_paires_creer(0u);
+  lexique_t *lexique = lexique_creer();
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  markov_t *m;
+  unsigned int b;
+
+  options.bigrammes = bigrammes;
+  options.lexique = lexique;
+  creer_fichier_dans(repertoire, "a.txt",
+                     "--Oui, dit-il. --Oui, dit-elle. Oui. Il dit: " GO
+                     "Viens" GF ", puis sortit. Il dit: " GO "Viens ici!"
+                     GF "\n\n" CADRATIN " Non, dit-il.");
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  /* "oui" commence 3 phrases, dont 2 repliques : tiret */
+  b = hachage_paires_identifiant(bigrammes, 0u, id(mots, "oui"));
+  assert(lexique_marques(lexique, b) == MARQUE_TIRET);
+  assert(lexique_liaison(lexique, b) == LIAISON_ESPACE);
+  b = hachage_paires_identifiant(bigrammes, 0u, id(mots, "non"));
+  assert(lexique_marques(lexique, b) == MARQUE_TIRET);
+  /* "il" commence deux phrases sans tiret (le guillemet fermant qui le
+     precede appartient a la phrase d'avant) */
+  b = hachage_paires_identifiant(bigrammes, 0u, id(mots, "il"));
+  assert(lexique_marques(lexique, b) == MARQUE_AUCUNE);
+  /* "dit: <<Viens" : deux-points et guillemet ouvrant */
+  b = hachage_paires_identifiant(bigrammes, id(mots, "dit"), id(mots, "viens"));
+  assert(lexique_liaison(lexique, b) == LIAISON_DEUX_POINTS);
+  assert(lexique_marques(lexique, b) == MARQUE_OUVRE_GUILLEMET);
+  /* "Viens>>, puis" : guillemet fermant et virgule */
+  b = hachage_paires_identifiant(bigrammes, id(mots, "viens"), id(mots, "puis"));
+  assert(lexique_liaison(lexique, b) == LIAISON_VIRGULE);
+  assert(lexique_marques(lexique, b) == MARQUE_FERME_GUILLEMET);
+  b = hachage_paires_identifiant(bigrammes, id(mots, "dit"), id(mots, "il"));
+  assert(lexique_liaison(lexique, b) == LIAISON_TRAIT_UNION);
+  assert(lexique_marques(lexique, b) == MARQUE_AUCUNE);
+  markov_detruire(&m);
+  lexique_detruire(&lexique);
+  hachage_paires_detruire(&bigrammes);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_phrase_par_ligne(void)
+{
+  const char *const contenu = "Un vers\nUn vers!\nUn autre\n";
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  markov_t *ponctuation = markov_creer(5u);
+  repertoire_bilan_t bilan;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, true, false, NULL };
+  markov_t *m;
+  unsigned int vers;
+  unsigned int autre;
+
+  options.ponctuation = ponctuation;
+  options.bilan = &bilan;
+  creer_fichier_dans(repertoire, "poeme.txt", contenu);
+  /* une phrase par ligne : trois phrases, les fins sans ponctuation sont
+     comptees telles quelles */
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  vers = id(mots, "vers");
+  autre = id(mots, "autre");
+  assert(bilan.nb_phrases == 3u && bilan.nb_mots == 6u);
+  assert(markov_poids(m, REPERTOIRE_DEBUT_PHRASE, id(mots, "un")) == 3u);
+  assert(markov_poids(m, vers, REPERTOIRE_DEBUT_PHRASE) == 2u);
+  assert(markov_poids(m, vers, id(mots, "un")) == 0u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + vers, PONCTUATION_AUCUNE) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + vers, PONCTUATION_EXCLAMATION) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + autre, PONCTUATION_AUCUNE) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + autre, PONCTUATION_POINT) == 0u);
+  markov_detruire(&m);
+  markov_detruire(&ponctuation);
+  hachage_detruire(&mots);
+  /* lecture habituelle : deux phrases, la fin sans ponctuation est un point */
+  mots = hachage_creer(0u);
+  ponctuation = markov_creer(5u);
+  options.ponctuation = ponctuation;
+  options.phrase_par_ligne = false;
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  vers = id(mots, "vers");
+  autre = id(mots, "autre");
+  assert(bilan.nb_phrases == 2u && bilan.nb_mots == 6u);
+  assert(markov_poids(m, vers, id(mots, "un")) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + autre, PONCTUATION_POINT) == 1u);
+  assert(markov_poids(ponctuation, REPERTOIRE_NB_FINS + autre, PONCTUATION_AUCUNE) == 0u);
+  markov_detruire(&m);
+  markov_detruire(&ponctuation);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_filtre_langue(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *anglais = chemin_dans(repertoire, "b_anglais.txt");
+  hachage_t *mots = hachage_creer(0u);
+  hachage_t *temoin;
+  repertoire_bilan_t bilan;
+  repertoire_bilan_t bilan_anglais;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, true, NULL };
+  markov_t *m;
+  markov_t *m_temoin;
+  unsigned int etats_francais;
+  unsigned int e;
+
+  options.bilan = &bilan;
+  creer_fichier_dans(repertoire, "a_francais.txt", TEXTE_FRANCAIS);
+  creer_fichier_dans(repertoire, "c_francais.txt", TEXTE_FRANCAIS);
+  /* temoin : le francais seul, sans filtre */
+  temoin = hachage_creer(0u);
+  m_temoin = repertoire_creer_markov(repertoire, 3u, temoin);
+  assert(m_temoin != NULL);
+  etats_francais = markov_nb_etats(m_temoin);
+  /* le texte anglais seul : nombre de phrases et de mots */
+  ecrire_fichier(anglais, TEXTE_ANGLAIS);
+  options.bilan = &bilan_anglais;
+  m = repertoire_apprendre(anglais, 3u, mots, &options);
+  assert(m != NULL);
+  assert(bilan_anglais.langue == LANGUE_ANGLAIS);
+  assert(bilan_anglais.nb_phrases == 6u);
+  assert(bilan_anglais.nb_phrases_ecartees == 0u);
+  assert(hachage_contient(mots, "river"));
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+
+  /* avec le filtre : l'anglais ne laisse aucune trace, la chaine est celle du francais seul */
+  mots = hachage_creer(0u);
+  options.bilan = &bilan;
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  assert(bilan.langue == LANGUE_FRANCAIS);
+  assert(bilan.nb_fichiers == 3u);
+  assert(bilan.nb_phrases_ecartees == bilan_anglais.nb_phrases);
+  assert(bilan.nb_mots_ecartes == bilan_anglais.nb_mots);
+  assert(bilan.nb_phrases > bilan.nb_phrases_ecartees);
+  assert(!hachage_contient(mots, "the") && !hachage_contient(mots, "river"));
+  assert(hachage_contient(mots, "chat") && hachage_contient(mots, "village"));
+  assert(markov_nb_etats(m) == etats_francais);
+  assert(hachage_nb_mots(mots) == hachage_nb_mots(temoin));
+  for (e = 0u; e < etats_francais; e++) {
+    assert(strcmp(hachage_mot(mots, e), hachage_mot(temoin, e)) == 0);
+    assert(markov_poids_total(m, e) == markov_poids_total(m_temoin, e));
+  }
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+
+  /* sans le filtre : tout est appris */
+  mots = hachage_creer(0u);
+  options.filtrer_langues = false;
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  assert(bilan.langue == LANGUE_INCONNUE);
+  assert(bilan.nb_phrases_ecartees == 0u && bilan.nb_mots_ecartes == 0u);
+  assert(hachage_contient(mots, "the") && hachage_contient(mots, "chat"));
+  assert(markov_nb_etats(m) > etats_francais);
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+
+  /* le filtre s'applique aussi a l'ordre 3 et en lecture par ligne */
+  mots = hachage_creer(0u);
+  options.filtrer_langues = true;
+  options.ordre = 3u;
+  options.phrase_par_ligne = true;
+  options.nuplets = hachage_nuplets_creer(3u, 0u);
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  assert(bilan.langue == LANGUE_FRANCAIS);
+  assert(!hachage_contient(mots, "river") && hachage_contient(mots, "chat"));
+  assert(markov_nb_etats(m) == hachage_nuplets_nb(options.nuplets));
+  markov_detruire(&m);
+  hachage_nuplets_detruire(&options.nuplets);
+  hachage_detruire(&mots);
+
+  markov_detruire(&m_temoin);
+  hachage_detruire(&temoin);
+  free(anglais);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_filtre_langue_inconnue(void)
+{
+  /* langue non reconnue : rien n'est ecarte */
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_bilan_t bilan;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, true, NULL };
+  markov_t *m;
+
+  options.bilan = &bilan;
+  creer_fichier_dans(repertoire, "a.txt", "Zorg blax krum. Blax zorg.");
+  creer_fichier_dans(repertoire, "vide.txt", "");
+  m = repertoire_apprendre(repertoire, 3u, mots, &options);
+  assert(m != NULL);
+  assert(bilan.langue == LANGUE_INCONNUE);
+  assert(bilan.nb_fichiers == 2u && bilan.nb_phrases == 2u);
+  assert(bilan.nb_phrases_ecartees == 0u);
+  assert(hachage_nb_mots(mots) == 4u);
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(repertoire);
+}
 
 /* ======================================================================== */
 /*                        Verification des contrats                         */
@@ -943,20 +1637,112 @@ static void violation_options_nulles(void)
   repertoire_apprendre("/tmp", 1u, mots, NULL);
 }
 
-static void violation_ordre_3(void)
+static void violation_ordre_3_sans_nuplets(void)
 {
   hachage_t *mots = hachage_creer(0u);
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
-  repertoire_options_t options = { 3u, false, NULL, NULL, NULL };
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
 
   options.bigrammes = bigrammes;
   repertoire_apprendre("/tmp", 1u, mots, &options);
 }
 
+static void violation_ordre_nul(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 0u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_ordre_trop_grand(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { REPERTOIRE_ORDRE_MAX + 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL };
+
+  options.nuplets = hachage_nuplets_creer(REPERTOIRE_ORDRE_MAX + 1u, 0u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_nuplets_de_mauvaise_taille(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 4u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+
+  options.nuplets = hachage_nuplets_creer(3u, 0u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_nuplets_a_l_ordre_1(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+
+  options.nuplets = hachage_nuplets_creer(1u, 0u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_nuplets_non_vides(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  const unsigned int elements[3] = { 0u, 0u, 0u };
+
+  options.nuplets = hachage_nuplets_creer(3u, 0u);
+  hachage_nuplets_ajouter(options.nuplets, elements);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_corpus_sans_chemin(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  const char *chemins[1] = { "/tmp" };
+
+  repertoire_apprendre_corpus(chemins, 0u, 1u, mots, &options);
+}
+
+static void violation_corpus_chemin_nul(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  const char *chemins[2] = { "/tmp", NULL };
+
+  repertoire_apprendre_corpus(chemins, 2u, 1u, mots, &options);
+}
+
+static void violation_lister_corpus_nul(void)
+{
+  size_t nb;
+
+  repertoire_lister_corpus(NULL, 1u, false, &nb);
+}
+
+static void violation_marques_sans_mot(void)
+{
+  iterateur_mots_t *it = iterateur_mots_creer("Makefile");
+
+  iterateur_mots_marques(it);
+}
+
+static void violation_phrase_par_ligne_trop_tard(void)
+{
+  iterateur_mots_t *it = iterateur_mots_creer("Makefile");
+
+  iterateur_mots_suivant(it, NULL);
+  iterateur_mots_phrase_par_ligne(it, true);
+}
+
+static void violation_cle_nulle(void)
+{
+  repertoire_cle(NULL);
+}
+
 static void violation_lexique_sans_bigrammes(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
 
   options.lexique = lexique_creer();
   repertoire_apprendre("/tmp", 1u, mots, &options);
@@ -965,7 +1751,7 @@ static void violation_lexique_sans_bigrammes(void)
 static void violation_ponctuation_non_vide(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
 
   options.ponctuation = markov_creer(1u);
   markov_ajouter_etat(options.ponctuation);
@@ -1039,7 +1825,18 @@ static void test_contrats(void)
   assert(viole_contrat(violation_graphie_sans_mot));
   assert(viole_contrat(violation_liaison_apres_fin));
   assert(viole_contrat(violation_options_nulles));
-  assert(viole_contrat(violation_ordre_3));
+  assert(viole_contrat(violation_ordre_3_sans_nuplets));
+  assert(viole_contrat(violation_ordre_nul));
+  assert(viole_contrat(violation_ordre_trop_grand));
+  assert(viole_contrat(violation_nuplets_de_mauvaise_taille));
+  assert(viole_contrat(violation_nuplets_a_l_ordre_1));
+  assert(viole_contrat(violation_nuplets_non_vides));
+  assert(viole_contrat(violation_corpus_sans_chemin));
+  assert(viole_contrat(violation_corpus_chemin_nul));
+  assert(viole_contrat(violation_lister_corpus_nul));
+  assert(viole_contrat(violation_marques_sans_mot));
+  assert(viole_contrat(violation_phrase_par_ligne_trop_tard));
+  assert(viole_contrat(violation_cle_nulle));
   assert(viole_contrat(violation_lexique_sans_bigrammes));
   assert(viole_contrat(violation_ponctuation_non_vide));
   assert(viole_contrat(violation_lister_nombre_nul));
@@ -1072,6 +1869,10 @@ int main(void)
   LANCER_TEST(test_iterateur_fichier_inexistant);
   LANCER_TEST(test_iterateur_repertoire);
   LANCER_TEST(test_iterateur_detruire_en_cours);
+  LANCER_TEST(test_iterateur_guillemets);
+  LANCER_TEST(test_iterateur_tirets);
+  LANCER_TEST(test_iterateur_phrase_par_ligne);
+  LANCER_TEST(test_cle);
   LANCER_TEST(test_markov_poids);
   LANCER_TEST(test_markov_fichiers_independants);
   LANCER_TEST(test_markov_ordre_des_fichiers);
@@ -1085,6 +1886,14 @@ int main(void)
   LANCER_TEST(test_apprendre_ordre_2);
   LANCER_TEST(test_apprendre_lexique_ponctuation);
   LANCER_TEST(test_apprendre_recursif);
+  LANCER_TEST(test_lister_corpus);
+  LANCER_TEST(test_apprendre_corpus);
+  LANCER_TEST(test_apprendre_ordre_3);
+  LANCER_TEST(test_apprendre_tous_les_ordres);
+  LANCER_TEST(test_apprendre_marques);
+  LANCER_TEST(test_apprendre_phrase_par_ligne);
+  LANCER_TEST(test_apprendre_filtre_langue);
+  LANCER_TEST(test_apprendre_filtre_langue_inconnue);
   LANCER_TEST(test_contrats);
   afficher_bilan("repertoire");
   return EXIT_SUCCESS;

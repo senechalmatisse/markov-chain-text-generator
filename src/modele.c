@@ -14,8 +14,11 @@ generation de phrases lisibles, sauvegarde et chargement.
 #include "repertoire.h"
 #include "sauvegarde.h"
 
-/** Premiere ligne d'un fichier de modele (format version 1). */
-#define ENTETE_MODELE "modele-markov 1"
+/** Premiere ligne d'un fichier de modele (format version 2). */
+#define ENTETE_MODELE "modele-markov 2"
+
+/** Aucun mot de depart memorise (cf. etat_de_depart). */
+#define AUCUN_DEPART UINT_MAX
 
 /** Melange de la graine pour la chaine de ponctuation : ses tirages sont
     independants de ceux de la chaine des mots. */
@@ -33,18 +36,29 @@ static const char *const TEXTE_LIAISON[NB_LIAISONS] = {
   " ", "'", "-", ". ", ", ", "; ", ": "
 };
 
-/** Texte de chaque ponctuation finale (etats 0 .. 3 de la ponctuation). */
+/** Texte de chaque fin de phrase (etats 0 .. 4 de la ponctuation ; la
+    derniere est la fin sans ponctuation). */
 static const char *const TEXTE_PONCTUATION[REPERTOIRE_NB_FINS] = {
-  ".", "!", "?", "..."
+  ".", "!", "?", "...", ""
 };
+
+/** Marques de dialogue, en UTF-8 : tiret cadratin suivi d'une espace,
+    guillemets francais ouvrant et fermant. */
+#define TEXTE_TIRET "\xE2\x80\x94 "
+#define TEXTE_GUILLEMET_OUVRANT "\xC2\xAB"
+#define TEXTE_GUILLEMET_FERMANT "\xC2\xBB"
 
 struct modele_s {
   unsigned int ordre;
   hachage_t *mots;
   hachage_paires_t *bigrammes;
+  hachage_nuplets_t *etats;     /* k-uplets de mots (ordre >= 3), ou NULL */
   lexique_t *lexique;
   markov_t *chaine;
   markov_t *ponctuation;
+  /* dernier resultat de etat_de_depart (evite de reparcourir les etats) */
+  unsigned int depart_mot;      /* AUCUN_DEPART si rien n'est memorise */
+  unsigned int depart_etat;
 };
 
 
@@ -139,9 +153,12 @@ static modele_t *modele_vide(unsigned int ordre)
     m->ordre = ordre;
     m->mots = NULL;
     m->bigrammes = NULL;
+    m->etats = NULL;
     m->lexique = NULL;
     m->chaine = NULL;
     m->ponctuation = NULL;
+    m->depart_mot = AUCUN_DEPART;
+    m->depart_etat = REPERTOIRE_DEBUT_PHRASE;
   }
   return m;
 }
@@ -152,6 +169,7 @@ void modele_detruire(modele_t **m)
   if (*m != NULL) {
     hachage_detruire(&(*m)->mots);
     hachage_paires_detruire(&(*m)->bigrammes);
+    hachage_nuplets_detruire(&(*m)->etats);
     lexique_detruire(&(*m)->lexique);
     markov_detruire(&(*m)->chaine);
     markov_detruire(&(*m)->ponctuation);
@@ -161,44 +179,70 @@ void modele_detruire(modele_t **m)
   POSTCONDITION(*m == NULL);
 }
 
-modele_t *modele_apprendre(const char *chemin_repertoire, unsigned int graine,
-                           unsigned int ordre, bool recursif)
+modele_t *modele_apprendre_corpus(const char *const *chemins,
+                                  size_t nb_chemins, unsigned int graine,
+                                  const modele_options_t *options,
+                                  repertoire_bilan_t *bilan)
 {
   modele_t *m;
-  repertoire_options_t options;
+  repertoire_options_t o;
   int erreur;
 
-  PRECONDITION(chemin_repertoire != NULL);
-  PRECONDITION(ordre == 1u || ordre == 2u);
+  PRECONDITION(chemins != NULL);
+  PRECONDITION(nb_chemins >= 1u);
+  PRECONDITION(options != NULL);
+  PRECONDITION(options->ordre >= 1u && options->ordre <= MODELE_ORDRE_MAX);
 
-  m = modele_vide(ordre);
+  m = modele_vide(options->ordre);
   if (m != NULL) {
     m->mots = hachage_creer(0u);
     m->bigrammes = hachage_paires_creer(0u);
     m->lexique = lexique_creer();
     m->ponctuation = markov_creer(graine ^ MELANGE_GRAINE_PONCTUATION);
+    if (options->ordre >= 3u) {
+      m->etats = hachage_nuplets_creer(options->ordre, 0u);
+    }
     if (m->mots == NULL || m->bigrammes == NULL || m->lexique == NULL
-        || m->ponctuation == NULL) {
+        || m->ponctuation == NULL
+        || (options->ordre >= 3u && m->etats == NULL)) {
       modele_detruire(&m);
       errno = ENOMEM;
     }
   }
   if (m != NULL) {
-    options.ordre = ordre;
-    options.recursif = recursif;
-    options.bigrammes = m->bigrammes;
-    options.lexique = m->lexique;
-    options.ponctuation = m->ponctuation;
-    m->chaine = repertoire_apprendre(chemin_repertoire, graine, m->mots,
-                                     &options);
+    o.ordre = options->ordre;
+    o.recursif = options->recursif;
+    o.bigrammes = m->bigrammes;
+    o.lexique = m->lexique;
+    o.ponctuation = m->ponctuation;
+    o.nuplets = m->etats;
+    o.phrase_par_ligne = options->phrase_par_ligne;
+    o.filtrer_langues = options->filtrer_langues;
+    o.bilan = bilan;
+    m->chaine = repertoire_apprendre_corpus(chemins, nb_chemins, graine, m->mots, &o);
     if (m->chaine == NULL) {
       erreur = errno;
       modele_detruire(&m);
       errno = erreur;
     }
   }
-  POSTCONDITION(m == NULL || modele_ordre(m) == ordre);
+  POSTCONDITION(m == NULL || modele_ordre(m) == options->ordre);
   return m;
+}
+
+modele_t *modele_apprendre(const char *chemin_repertoire, unsigned int graine,
+                           unsigned int ordre, bool recursif)
+{
+  modele_options_t options;
+
+  PRECONDITION(chemin_repertoire != NULL);
+  PRECONDITION(ordre >= 1u && ordre <= MODELE_ORDRE_MAX);
+
+  options.ordre = ordre;
+  options.recursif = recursif;
+  options.phrase_par_ligne = false;
+  options.filtrer_langues = false;
+  return modele_apprendre_corpus(&chemin_repertoire, 1u, graine, &options, NULL);
 }
 
 
@@ -236,6 +280,32 @@ const hachage_paires_t *modele_bigrammes(const modele_t *m)
   return m->bigrammes;
 }
 
+const hachage_nuplets_t *modele_etats(const modele_t *m)
+{
+  PRECONDITION(m != NULL);
+  return m->etats;
+}
+
+unsigned int modele_mot(const modele_t *m, const char *graphie)
+{
+  char *cle;
+  unsigned int mot = HACHAGE_ABSENT;
+
+  PRECONDITION(m != NULL);
+  PRECONDITION(graphie != NULL);
+
+  cle = repertoire_cle(graphie);            /* errno : EINVAL ou ENOMEM */
+  if (cle != NULL) {
+    mot = hachage_identifiant(m->mots, cle);
+    free(cle);
+    if (mot == HACHAGE_ABSENT) {
+      errno = ENOENT;
+    }
+  }
+  POSTCONDITION(mot == HACHAGE_ABSENT || (mot >= 1u && mot <= modele_nb_mots(m)));
+  return mot;
+}
+
 const lexique_t *modele_lexique(const modele_t *m)
 {
   PRECONDITION(m != NULL);
@@ -259,75 +329,213 @@ const markov_t *modele_ponctuation(const modele_t *m)
 /*                               Generation                                 */
 /* ======================================================================== */
 
-/** Ajoute la graphie d'affichage du mot d'un bigramme. */
-static bool ajouter_graphie(tampon_t *t, const lexique_t *l,
-                            unsigned int bigramme, bool debut_phrase)
+/** Dernier mot d'un etat de la chaine. */
+static unsigned int dernier_mot(const modele_t *m, unsigned int etat)
 {
-  size_t longueur = lexique_ecrire(l, bigramme, debut_phrase, NULL, 0u);
-  bool succes = reserver(t, longueur);
+  unsigned int mot;
 
-  if (succes) {
-    lexique_ecrire(l, bigramme, debut_phrase, t->texte + t->longueur,
-                   t->capacite - t->longueur);
-    t->longueur += longueur;
+  if (m->ordre == 1u) {
+    mot = etat;
+  } else if (m->ordre == 2u) {
+    mot = hachage_paires_second(m->bigrammes, etat);
+  } else {
+    mot = hachage_nuplets_element(m->etats, etat, m->ordre - 1u);
   }
-  return succes;
+  return mot;
+}
+
+/** Phrase en cours d'ecriture. */
+typedef struct {
+  tampon_t texte;
+  unsigned int nb_mots;
+  bool guillemet_ouvert;  /* un guillemet ouvrant attend son fermant */
+  bool succes;            /* false des que la memoire a manque */
+} ecriture_t;
+
+/** Ajoute un texte a la phrase (sans effet apres un echec). */
+static void ecrire(ecriture_t *e, const char *texte)
+{
+  e->succes = e->succes && ajouter(&e->texte, texte);
+}
+
+/**
+ * Ajoute a la phrase le mot d'un bigramme, precede de son separateur : dans
+ * l'ordre, guillemet fermant, liaison, tiret, guillemet ouvrant. Devant le
+ * premier mot, seuls le tiret et le guillemet ouvrant sont ecrits. Un
+ * guillemet n'est ferme que s'il est ouvert, et ouvert que s'il est ferme.
+ */
+static void ecrire_mot(const modele_t *m, ecriture_t *e, unsigned int bigramme)
+{
+  const lexique_t *l = m->lexique;
+  unsigned int marques = lexique_marques(l, bigramme);
+  bool debut = (e->nb_mots == 0u);
+  size_t longueur;
+
+  if (!debut) {
+    if ((marques & MARQUE_FERME_GUILLEMET) != 0u && e->guillemet_ouvert) {
+      ecrire(e, TEXTE_GUILLEMET_FERMANT);
+      e->guillemet_ouvert = false;
+    }
+    ecrire(e, TEXTE_LIAISON[lexique_liaison(l, bigramme)]);
+  }
+  if ((marques & MARQUE_TIRET) != 0u) {
+    ecrire(e, TEXTE_TIRET);
+  }
+  if ((marques & MARQUE_OUVRE_GUILLEMET) != 0u && !e->guillemet_ouvert) {
+    ecrire(e, TEXTE_GUILLEMET_OUVRANT);
+    e->guillemet_ouvert = true;
+  }
+  longueur = lexique_ecrire(l, bigramme, debut, NULL, 0u);
+  e->succes = e->succes && reserver(&e->texte, longueur);
+  if (e->succes) {
+    lexique_ecrire(l, bigramme, debut, e->texte.texte + e->texte.longueur,
+                   e->texte.capacite - e->texte.longueur);
+    e->texte.longueur += longueur;
+  }
+  e->nb_mots++;
+}
+
+/** Ajoute a la phrase son premier mot, ecrit hors de tout contexte. */
+static void ecrire_premier_mot_seul(const modele_t *m, ecriture_t *e, unsigned int mot)
+{
+  size_t longueur = lexique_ecrire_mot(m->lexique, mot, true, NULL, 0u);
+
+  e->succes = e->succes && reserver(&e->texte, longueur);
+  if (e->succes) {
+    lexique_ecrire_mot(m->lexique, mot, true,
+                       e->texte.texte + e->texte.longueur,
+                       e->texte.capacite - e->texte.longueur);
+    e->texte.longueur += longueur;
+  }
+  e->nb_mots++;
+}
+
+/**
+ * Ecrit une phrase en parcourant la chaine a partir de l'etat donne (qui
+ * n'est pas le debut de phrase) jusqu'au retour a l'etat 0. Si
+ * premier_seul, le premier mot est ecrit hors contexte (son etat n'est pas
+ * un debut de phrase). Renvoie la phrase, ou NULL si la memoire manque.
+ */
+static char *generer(modele_t *m, unsigned int etat, bool premier_seul)
+{
+  ecriture_t e = { { NULL, 0u, 0u }, 0u, false, true };
+  unsigned int mot;
+  unsigned int precedent = REPERTOIRE_DEBUT_PHRASE;
+  unsigned int bigramme;
+  unsigned int ponctuation = (unsigned int)PONCTUATION_POINT;
+
+  while (etat != REPERTOIRE_DEBUT_PHRASE
+         && e.nb_mots < MODELE_NB_MOTS_MAX_PHRASE) {
+    mot = dernier_mot(m, etat);
+    if (premier_seul && e.nb_mots == 0u) {
+      ecrire_premier_mot_seul(m, &e, mot);
+    } else {
+      /* bigramme (mot precedent, mot) : c'est l'etat a l'ordre 2 ; sinon il
+         existe car ces deux mots se suivent dans le corpus */
+      bigramme = (m->ordre == 2u)
+                 ? etat
+                 : hachage_paires_identifiant(m->bigrammes, precedent, mot);
+      INVARIANT(bigramme != HACHAGE_ABSENT);
+      ecrire_mot(m, &e, bigramme);
+    }
+    precedent = mot;
+    etat = markov_deplacer(m->chaine, etat);
+  }
+  /* ponctuation finale tiree selon le dernier mot (sauf phrase coupee),
+     puis fermeture du guillemet reste ouvert */
+  if (etat == REPERTOIRE_DEBUT_PHRASE) {
+    ponctuation = markov_deplacer(m->ponctuation, REPERTOIRE_NB_FINS + precedent);
+  }
+  INVARIANT(ponctuation < REPERTOIRE_NB_FINS);
+  ecrire(&e, TEXTE_PONCTUATION[ponctuation]);
+  if (e.guillemet_ouvert) {
+    ecrire(&e, TEXTE_GUILLEMET_FERMANT);
+  }
+  if (!e.succes) {
+    free(e.texte.texte);
+    e.texte.texte = NULL;
+    errno = ENOMEM;
+  }
+  POSTCONDITION(e.texte.texte == NULL || e.texte.longueur >= 1u);
+  return e.texte.texte;
 }
 
 char *modele_generer_phrase(modele_t *m)
 {
-  tampon_t phrase = { NULL, 0u, 0u };
-  unsigned int etat;
-  unsigned int mot = REPERTOIRE_DEBUT_PHRASE;
-  unsigned int precedent = REPERTOIRE_DEBUT_PHRASE;
-  unsigned int bigramme;
-  unsigned int nb_mots = 0u;
-  unsigned int ponctuation = (unsigned int)PONCTUATION_POINT;
-  bool succes = true;
-
   PRECONDITION(m != NULL);
   PRECONDITION(modele_peut_generer(m));
 
-  etat = markov_deplacer(m->chaine, REPERTOIRE_DEBUT_PHRASE);
-  while (etat != REPERTOIRE_DEBUT_PHRASE
-         && nb_mots < MODELE_NB_MOTS_MAX_PHRASE) {
-    /* bigramme (mot precedent, mot) : c'est l'etat a l'ordre 2 ; a l'ordre
-       1, il existe car la transition precedent -> mot a ete observee */
-    if (m->ordre == 1u) {
-      mot = etat;
-      bigramme = hachage_paires_identifiant(m->bigrammes, precedent, mot);
-    } else {
-      bigramme = etat;
-      mot = hachage_paires_second(m->bigrammes, bigramme);
+  return generer(m, markov_deplacer(m->chaine, REPERTOIRE_DEBUT_PHRASE), false);
+}
+
+/**
+ * Etat "debut de phrase suivi du mot" : (0, mot) a l'ordre 2,
+ * (0, ..., 0, mot) au-dela, le mot lui-meme a l'ordre 1 ; HACHAGE_ABSENT si
+ * le mot ne commence aucune phrase du corpus.
+ */
+static unsigned int etat_debut_de_phrase(const modele_t *m, unsigned int mot)
+{
+  unsigned int elements[MODELE_ORDRE_MAX] = { 0u };
+  unsigned int etat = hachage_paires_identifiant(m->bigrammes, REPERTOIRE_DEBUT_PHRASE, mot);
+
+  if (etat != HACHAGE_ABSENT && m->ordre == 1u) {
+    etat = mot;
+  } else if (etat != HACHAGE_ABSENT && m->ordre >= 3u) {
+    elements[m->ordre - 1u] = mot;
+    etat = hachage_nuplets_identifiant(m->etats, elements);
+  }
+  return etat;
+}
+
+/**
+ * Etat d'ou part une phrase qui commence par le mot donne, et indication
+ * (premier_seul) que cet etat n'est pas un debut de phrase. Le resultat est
+ * memorise : le parcours des etats n'est refait que si le mot change.
+ */
+static unsigned int etat_de_depart(modele_t *m, unsigned int mot, bool *premier_seul)
+{
+  unsigned int nb_etats = markov_nb_etats(m->chaine);
+  unsigned int etat = etat_debut_de_phrase(m, mot);
+  unsigned int e;
+  unsigned int poids;
+  unsigned int meilleur_poids = 0u;
+
+  *premier_seul = (etat == HACHAGE_ABSENT);
+  if (etat == HACHAGE_ABSENT && m->ordre == 1u) {
+    etat = mot;
+  } else if (etat == HACHAGE_ABSENT && m->depart_mot == mot) {
+    etat = m->depart_etat;
+  } else if (etat == HACHAGE_ABSENT) {
+    /* contexte le plus frequent : etat de plus grand poids total dont le
+       mot est le dernier (le premier cree, a poids egal) */
+    for (e = 1u; e < nb_etats; e++) {
+      if (dernier_mot(m, e) == mot) {
+        poids = markov_poids_total(m->chaine, e);
+        if (poids > meilleur_poids) {
+          meilleur_poids = poids;
+          etat = e;
+        }
+      }
     }
-    INVARIANT(bigramme != HACHAGE_ABSENT);
-    if (succes && nb_mots > 0u) {
-      succes = ajouter(&phrase,
-                       TEXTE_LIAISON[lexique_liaison(m->lexique, bigramme)]);
-    }
-    if (succes) {
-      succes = ajouter_graphie(&phrase, m->lexique, bigramme, nb_mots == 0u);
-    }
-    precedent = mot;
-    nb_mots++;
-    etat = markov_deplacer(m->chaine, etat);
+    m->depart_mot = mot;
+    m->depart_etat = etat;
   }
-  /* ponctuation finale tiree selon le dernier mot (sauf phrase coupee) */
-  if (etat == REPERTOIRE_DEBUT_PHRASE) {
-    ponctuation = markov_deplacer(m->ponctuation,
-                                  REPERTOIRE_NB_FINS + precedent);
-  }
-  INVARIANT(ponctuation < REPERTOIRE_NB_FINS);
-  if (succes) {
-    succes = ajouter(&phrase, TEXTE_PONCTUATION[ponctuation]);
-  }
-  if (!succes) {
-    free(phrase.texte);
-    phrase.texte = NULL;
-    errno = ENOMEM;
-  }
-  POSTCONDITION(phrase.texte == NULL || phrase.longueur > 1u);
-  return phrase.texte;
+  /* tout mot est le dernier mot d'un etat qui a un voisin (propriete des
+     modeles appris, verifiee au chargement) */
+  INVARIANT(etat != HACHAGE_ABSENT && etat != REPERTOIRE_DEBUT_PHRASE);
+  return etat;
+}
+
+char *modele_generer_phrase_depuis(modele_t *m, unsigned int mot)
+{
+  unsigned int etat;
+  bool premier_seul = false;
+
+  PRECONDITION(m != NULL);
+  PRECONDITION(mot >= 1u && mot <= modele_nb_mots(m));
+
+  etat = etat_de_depart(m, mot, &premier_seul);
+  return generer(m, etat, premier_seul);
 }
 
 
@@ -360,16 +568,13 @@ static bool fin_de_ligne(tampon_t *t, FILE *fichier)
 }
 
 /** Ecrit "<titre> <nombre>". */
-static bool ecrire_section(tampon_t *t, FILE *fichier, const char *titre,
-                           unsigned int nombre)
+static bool ecrire_section(tampon_t *t, FILE *fichier, const char *titre, unsigned int nombre)
 {
-  return ajouter(t, titre) && ajouter_champ(t, nombre)
-         && fin_de_ligne(t, fichier);
+  return ajouter(t, titre) && ajouter_champ(t, nombre) && fin_de_ligne(t, fichier);
 }
 
 /** Ecrit les transitions de chaque etat d'une chaine finalisee. */
-static bool ecrire_chaine(tampon_t *t, FILE *fichier, const char *titre,
-                          const markov_t *chaine)
+static bool ecrire_chaine(tampon_t *t, FILE *fichier, const char *titre, const markov_t *chaine)
 {
   unsigned int e;
   unsigned int r;
@@ -395,6 +600,7 @@ static bool ecrire_modele(const modele_t *m, tampon_t *t, FILE *fichier)
 {
   unsigned int n = hachage_nb_mots(m->mots);
   unsigned int b = hachage_paires_nb(m->bigrammes);
+  unsigned int e = (m->etats != NULL) ? hachage_nuplets_nb(m->etats) : 0u;
   unsigned int i;
   unsigned int r;
   unsigned int k;
@@ -406,11 +612,9 @@ static bool ecrire_modele(const modele_t *m, tampon_t *t, FILE *fichier)
   /* mots : cle, variante choisie, casse, variantes */
   for (i = 0u; succes && i < n; i++) {
     k = lexique_nb_variantes(m->lexique, i);
-    succes = ajouter(t, (i == REPERTOIRE_DEBUT_PHRASE)
-                        ? "-" : hachage_mot(m->mots, i))
+    succes = ajouter(t, (i == REPERTOIRE_DEBUT_PHRASE) ? "-" : hachage_mot(m->mots, i))
              && ajouter_choix(t, lexique_variante_mot(m->lexique, i))
-             && ajouter_champ(t, (unsigned int)lexique_casse_mot(m->lexique,
-                                                                 i))
+             && ajouter_champ(t, (unsigned int)lexique_casse_mot(m->lexique, i))
              && ajouter_champ(t, k);
     for (r = 0u; succes && r < k; r++) {
       succes = ajouter(t, " ") && ajouter(t, lexique_variante(m->lexique, i, r));
@@ -425,7 +629,19 @@ static bool ecrire_modele(const modele_t *m, tampon_t *t, FILE *fichier)
              && ajouter_choix(t, lexique_variante_bigramme(m->lexique, i))
              && ajouter_choix(t, lexique_casse_bigramme(m->lexique, i))
              && ajouter_champ(t, (unsigned int)lexique_liaison(m->lexique, i))
+             && ajouter_champ(t, lexique_marques(m->lexique, i))
              && fin_de_ligne(t, fichier);
+  }
+  /* etats (ordre >= 3) : les k mots de chaque k-uplet */
+  if (m->etats != NULL) {
+    succes = succes && ecrire_section(t, fichier, "etats", e);
+    for (i = 0u; succes && i < e; i++) {
+      succes = ajouter_nombre(t, hachage_nuplets_element(m->etats, i, 0u));
+      for (r = 1u; succes && r < m->ordre; r++) {
+        succes = ajouter_champ(t, hachage_nuplets_element(m->etats, i, r));
+      }
+      succes = succes && fin_de_ligne(t, fichier);
+    }
   }
   succes = succes && ecrire_chaine(t, fichier, "chaine", m->chaine)
            && ecrire_chaine(t, fichier, "ponctuation", m->ponctuation)
@@ -602,8 +818,7 @@ static bool lire_entier_ou_tiret(char **curseur, unsigned int *valeur)
 }
 
 /** Lit une ligne "<titre> <nombre>". */
-static bool lire_section(lecteur_t *lecteur, const char *titre,
-                         unsigned int *nombre)
+static bool lire_section(lecteur_t *lecteur, const char *titre, unsigned int *nombre)
 {
   char *curseur = ligne_suivante(lecteur);
   char *jeton;
@@ -624,6 +839,7 @@ typedef struct {
   unsigned int *variante_bigramme;
   unsigned int *casse_bigramme;
   liaison_t *liaison_bigramme;
+  unsigned int *marques_bigramme;
 } choix_t;
 
 /** Lit la ligne du mot i (cle, choix, variantes). */
@@ -687,8 +903,7 @@ static void lire_mot(lecteur_t *lecteur, modele_t *m, choix_t *choix,
 }
 
 /** Lit la ligne du bigramme j (paire et choix d'affichage). */
-static void lire_bigramme(lecteur_t *lecteur, modele_t *m, choix_t *choix,
-                          unsigned int j)
+static void lire_bigramme(lecteur_t *lecteur, modele_t *m, choix_t *choix, unsigned int j)
 {
   char *curseur = ligne_suivante(lecteur);
   unsigned int n = hachage_nb_mots(m->mots);
@@ -697,20 +912,21 @@ static void lire_bigramme(lecteur_t *lecteur, modele_t *m, choix_t *choix,
   unsigned int variante = 0u;
   unsigned int casse = 0u;
   unsigned int liaison = 0u;
+  unsigned int marques = 0u;
   unsigned int identifiant;
   bool valide = curseur != NULL && lire_entier(&curseur, &premier)
                 && lire_entier(&curseur, &second)
                 && lire_entier_ou_tiret(&curseur, &variante)
                 && lire_entier_ou_tiret(&curseur, &casse)
-                && lire_entier(&curseur, &liaison) && *curseur == '\0'
+                && lire_entier(&curseur, &liaison)
+                && lire_entier(&curseur, &marques) && *curseur == '\0'
                 && premier < n && second < n && liaison < NB_LIAISONS
+                && lexique_separateur_valide((liaison_t)liaison, marques)
                 && (casse == LEXIQUE_AUCUNE || casse < NB_CASSES)
                 /* la paire 0 est (0, 0) ; les autres decrivent un vrai mot */
-                && ((j == 0u) ? (premier == 0u && second == 0u
-                                 && variante == LEXIQUE_AUCUNE)
+                && ((j == 0u) ? (premier == 0u && second == 0u && variante == LEXIQUE_AUCUNE)
                               : second != REPERTOIRE_DEBUT_PHRASE)
-                && (variante == LEXIQUE_AUCUNE
-                    || variante < lexique_nb_variantes(m->lexique, second));
+                && (variante == LEXIQUE_AUCUNE || variante < lexique_nb_variantes(m->lexique, second));
 
   if (valide) {
     identifiant = hachage_paires_ajouter(m->bigrammes, premier, second);
@@ -724,6 +940,40 @@ static void lire_bigramme(lecteur_t *lecteur, modele_t *m, choix_t *choix,
       choix->variante_bigramme[j] = variante;
       choix->casse_bigramme[j] = casse;
       choix->liaison_bigramme[j] = (liaison_t)liaison;
+      choix->marques_bigramme[j] = marques;
+    }
+  }
+  if (!valide && lecteur->erreur == 0) {
+    lecteur->erreur = EINVAL;
+  }
+}
+
+/**
+ * Lit la ligne de l'etat j (ordre >= 3) : un k-uplet de mots. L'etat 0 est
+ * (0, ..., 0) ; les autres se terminent par un vrai mot et leurs 0 (debut
+ * de phrase) sont tous en tete.
+ */
+static void lire_etat(lecteur_t *lecteur, modele_t *m, unsigned int j)
+{
+  char *curseur = ligne_suivante(lecteur);
+  unsigned int n = hachage_nb_mots(m->mots);
+  unsigned int elements[MODELE_ORDRE_MAX] = { 0u };
+  unsigned int identifiant;
+  unsigned int r;
+  bool valide = (curseur != NULL);
+
+  for (r = 0u; valide && r < m->ordre; r++) {
+    valide = lire_entier(&curseur, &elements[r]) && elements[r] < n
+             && (r == 0u || elements[r] != REPERTOIRE_DEBUT_PHRASE
+                 || elements[r - 1u] == REPERTOIRE_DEBUT_PHRASE);
+  }
+  valide = valide && *curseur == '\0' && ((elements[m->ordre - 1u] == REPERTOIRE_DEBUT_PHRASE) == (j == 0u));
+  if (valide) {
+    identifiant = hachage_nuplets_ajouter(m->etats, elements);
+    if (identifiant == HACHAGE_ABSENT) {
+      lecteur->erreur = ENOMEM;
+    } else if (identifiant != j) {
+      valide = false;                      /* etat en double */
     }
   }
   if (!valide && lecteur->erreur == 0) {
@@ -733,8 +983,7 @@ static void lire_bigramme(lecteur_t *lecteur, modele_t *m, choix_t *choix,
 
 /** Lit une section de transitions dans une chaine (qui est creee). */
 static markov_t *lire_chaine(lecteur_t *lecteur, const char *titre,
-                             unsigned int nb_etats_attendu,
-                             unsigned int graine)
+                             unsigned int nb_etats_attendu, unsigned int graine)
 {
   markov_t *chaine = NULL;
   char *curseur;
@@ -745,8 +994,7 @@ static markov_t *lire_chaine(lecteur_t *lecteur, const char *titre,
   unsigned int destination = 0u;
   unsigned int poids = 0u;
   unsigned int minimum;
-  bool valide = lire_section(lecteur, titre, &nb_etats)
-                && nb_etats == nb_etats_attendu;
+  bool valide = lire_section(lecteur, titre, &nb_etats) && nb_etats == nb_etats_attendu;
 
   if (valide) {
     chaine = markov_creer(graine);
@@ -790,44 +1038,66 @@ static markov_t *lire_chaine(lecteur_t *lecteur, const char *titre,
   return chaine;
 }
 
-/** Dernier mot d'un etat de la chaine. */
-static unsigned int dernier_mot(const modele_t *m, unsigned int etat)
+/**
+ * Verifie qu'une transition e -> d (d != 0) de la chaine enchaine bien deux
+ * etats : les mots de d sont ceux de e decales d'un rang, et le bigramme
+ * (dernier mot de e, dernier mot de d) est connu du lexique.
+ */
+static bool transition_coherente(const modele_t *m, unsigned int e, unsigned int d)
 {
-  return (m->ordre == 1u) ? etat : hachage_paires_second(m->bigrammes, etat);
+  unsigned int r;
+  bool valide;
+
+  if (m->ordre == 1u) {
+    valide = (hachage_paires_identifiant(m->bigrammes, e, d) != HACHAGE_ABSENT);
+  } else if (m->ordre == 2u) {
+    valide = (hachage_paires_premier(m->bigrammes, d) == hachage_paires_second(m->bigrammes, e));
+  } else {
+    valide = (hachage_paires_identifiant(m->bigrammes, dernier_mot(m, e), dernier_mot(m, d)) != HACHAGE_ABSENT);
+    for (r = 0u; valide && r + 1u < m->ordre; r++) {
+      valide = (hachage_nuplets_element(m->etats, d, r) == hachage_nuplets_element(m->etats, e, r + 1u));
+    }
+  }
+  return valide;
 }
 
 /**
  * Verifie qu'un modele charge peut etre utilise sans risque : chaque etat
- * atteint a un voisin, chaque transition correspond a un bigramme connu et
- * chaque fin de phrase a une ponctuation.
+ * atteint a un voisin, chaque transition enchaine deux etats coherents,
+ * chaque fin de phrase a une ponctuation et chaque mot est le dernier mot
+ * d'un etat (on peut faire commencer une phrase par n'importe quel mot).
+ * Renvoie false si le modele est incoherent ou si la memoire manque
+ * (*erreur recoit EINVAL ou ENOMEM).
  */
-static bool verifier_coherence(const modele_t *m)
+static bool verifier_coherence(const modele_t *m, int *erreur)
 {
   unsigned int nb_etats = markov_nb_etats(m->chaine);
+  unsigned int nb_mots = hachage_nb_mots(m->mots);
+  unsigned char *vus = calloc(nb_mots, sizeof(unsigned char));
   unsigned int e;
   unsigned int r;
   unsigned int d;
   unsigned int poids;
-  bool valide = true;
+  bool valide = (vus != NULL);
 
+  *erreur = valide ? EINVAL : ENOMEM;
   for (e = 0u; valide && e < nb_etats; e++) {
+    vus[dernier_mot(m, e)] = 1u;
     valide = (e == REPERTOIRE_DEBUT_PHRASE || markov_nb_voisins(m->chaine, e) > 0u);
     for (r = 0u; valide && r < markov_nb_voisins(m->chaine, e); r++) {
       d = markov_voisin(m->chaine, e, r, &poids);
       if (d == REPERTOIRE_DEBUT_PHRASE) {
         /* fin de phrase : pas de phrase vide, une ponctuation possible */
         valide = (e != REPERTOIRE_DEBUT_PHRASE)
-                 && markov_nb_voisins(m->ponctuation,
-                                      REPERTOIRE_NB_FINS + dernier_mot(m, e))
-                    > 0u;
-      } else if (m->ordre == 1u) {
-        valide = (hachage_paires_identifiant(m->bigrammes, e, d)
-                  != HACHAGE_ABSENT);
+                 && markov_nb_voisins(m->ponctuation, REPERTOIRE_NB_FINS + dernier_mot(m, e)) > 0u;
       } else {
-        valide = (hachage_paires_premier(m->bigrammes, d)
-                  == hachage_paires_second(m->bigrammes, e));
+        valide = transition_coherente(m, e, d);
       }
     }
+  }
+  /* chaque mot termine au moins un etat */
+  for (e = 0u; valide && e < nb_mots; e++) {
+    valide = (vus[e] != 0u);
   }
   /* ponctuation : seuls les mots menent, et seulement a une ponctuation */
   for (e = 0u; valide && e < markov_nb_etats(m->ponctuation); e++) {
@@ -836,17 +1106,21 @@ static bool verifier_coherence(const modele_t *m)
       valide = (e >= REPERTOIRE_NB_FINS && d < REPERTOIRE_NB_FINS);
     }
   }
+  free(vus);
   return valide;
 }
 
 /** Lit tout le fichier (le modele m a deja ses tables vides). */
 static void lire_modele(lecteur_t *lecteur, modele_t *m, unsigned int graine)
 {
-  choix_t choix = { NULL, NULL, NULL, NULL, NULL };
+  choix_t choix = { NULL, NULL, NULL, NULL, NULL, NULL };
   char *curseur;
   unsigned int n = 0u;
   unsigned int b = 0u;
+  unsigned int e = 0u;
+  unsigned int nb_etats;
   unsigned int i;
+  int erreur_coherence = 0;
 
   /* en-tete, ordre et nombre de mots */
   curseur = ligne_suivante(lecteur);
@@ -854,8 +1128,14 @@ static void lire_modele(lecteur_t *lecteur, modele_t *m, unsigned int graine)
     lecteur->erreur = EINVAL;
   }
   if (lecteur->erreur == 0 && lire_section(lecteur, "ordre", &m->ordre)
-      && m->ordre != 1u && m->ordre != 2u) {
+      && (m->ordre < 1u || m->ordre > MODELE_ORDRE_MAX)) {
     lecteur->erreur = EINVAL;
+  }
+  if (lecteur->erreur == 0 && m->ordre >= 3u) {
+    m->etats = hachage_nuplets_creer(m->ordre, 0u);
+    if (m->etats == NULL) {
+      lecteur->erreur = ENOMEM;
+    }
   }
   if (lecteur->erreur == 0 && lire_section(lecteur, "mots", &n) && n == 0u) {
     lecteur->erreur = EINVAL;
@@ -879,18 +1159,28 @@ static void lire_modele(lecteur_t *lecteur, modele_t *m, unsigned int graine)
     choix.variante_bigramme = calloc(b, sizeof(unsigned int));
     choix.casse_bigramme = calloc(b, sizeof(unsigned int));
     choix.liaison_bigramme = calloc(b, sizeof(liaison_t));
+    choix.marques_bigramme = calloc(b, sizeof(unsigned int));
     if (choix.variante_bigramme == NULL || choix.casse_bigramme == NULL
-        || choix.liaison_bigramme == NULL) {
+        || choix.liaison_bigramme == NULL
+        || choix.marques_bigramme == NULL) {
       lecteur->erreur = ENOMEM;
     }
   }
   for (i = 0u; lecteur->erreur == 0 && i < b; i++) {
     lire_bigramme(lecteur, m, &choix, i);
   }
+  /* etats (ordre >= 3) */
+  if (lecteur->erreur == 0 && m->ordre >= 3u
+      && lire_section(lecteur, "etats", &e) && e == 0u) {
+    lecteur->erreur = EINVAL;
+  }
+  for (i = 0u; lecteur->erreur == 0 && m->ordre >= 3u && i < e; i++) {
+    lire_etat(lecteur, m, i);
+  }
   /* chaines */
   if (lecteur->erreur == 0) {
-    m->chaine = lire_chaine(lecteur, "chaine", (m->ordre == 1u) ? n : b,
-                            graine);
+    nb_etats = (m->ordre == 1u) ? n : ((m->ordre == 2u) ? b : e);
+    m->chaine = lire_chaine(lecteur, "chaine", nb_etats, graine);
   }
   if (lecteur->erreur == 0) {
     m->ponctuation = lire_chaine(lecteur, "ponctuation",
@@ -914,10 +1204,11 @@ static void lire_modele(lecteur_t *lecteur, modele_t *m, unsigned int graine)
     for (i = 0u; i < b; i++) {
       lexique_fixer_bigramme(m->lexique, i, choix.variante_bigramme[i],
                              choix.casse_bigramme[i],
-                             choix.liaison_bigramme[i]);
+                             choix.liaison_bigramme[i],
+                             choix.marques_bigramme[i]);
     }
-    if (!verifier_coherence(m)) {
-      lecteur->erreur = EINVAL;
+    if (!verifier_coherence(m, &erreur_coherence)) {
+      lecteur->erreur = erreur_coherence;
     }
   }
   free(choix.variante_mot);
@@ -925,6 +1216,7 @@ static void lire_modele(lecteur_t *lecteur, modele_t *m, unsigned int graine)
   free(choix.variante_bigramme);
   free(choix.casse_bigramme);
   free(choix.liaison_bigramme);
+  free(choix.marques_bigramme);
 }
 
 modele_t *modele_charger(const char *chemin_fichier, unsigned int graine)
@@ -960,6 +1252,6 @@ modele_t *modele_charger(const char *chemin_fichier, unsigned int graine)
     modele_detruire(&m);
     errno = erreur;
   }
-  POSTCONDITION(m == NULL || modele_ordre(m) == 1u || modele_ordre(m) == 2u);
+  POSTCONDITION(m == NULL || (modele_ordre(m) >= 1u && modele_ordre(m) <= MODELE_ORDRE_MAX));
   return m;
 }

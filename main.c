@@ -1,15 +1,18 @@
 /**
 @file main.c
 Fichier main.c
+Auteur(s):
 
 Programme principal : apprend un modele de langue (chaine de Markov) a
-partir des fichiers texte d'un repertoire, ou charge un modele sauvegarde,
-genere un texte aleatoire et le sauvegarde dans un nouveau fichier (le
-texte est aussi affiche sur la sortie standard).
+partir d'un corpus (fichiers texte et repertoires de fichiers texte), ou
+charge un modele sauvegarde, genere un texte aleatoire et le sauvegarde
+dans un nouveau fichier (le texte est aussi affiche sur la sortie
+standard).
 
 @verbatim
 Usage :
-  ./projet [options] <repertoire> [graine] [nb_phrases] [fichier_sortie]
+  ./projet [options] <corpus> [<corpus> ...]
+  ./projet [options] <repertoire> <graine> [nb_phrases] [fichier_sortie]
   ./projet [options] -m <modele>
 Options :
   -g <graine>   graine du generateur aleatoire (defaut : l'heure)
@@ -17,14 +20,22 @@ Options :
   -o <fichier>  fichier a creer (defaut : texte_genere_<graine>.txt dans le
                 repertoire courant, jamais ecrase : un suffixe _2, _3, ...
                 est ajoute si ce nom existe deja)
-  -k <ordre>    ordre de la chaine : 1 (defaut) ou 2
+  -p <mot>      faire commencer chaque phrase par ce mot (accents et
+                majuscules facultatifs)
+  -k <ordre>    ordre de la chaine : de 1 (defaut) a 8
   -r            lire aussi les sous-repertoires
+  -l            une phrase par ligne (poemes, chansons, listes)
+  -t            tout garder : ne pas ecarter les passages ecrits dans une
+                autre langue que la langue majoritaire du corpus
   -s <fichier>  sauvegarder le modele appris dans ce fichier
   -m <fichier>  charger un modele sauvegarde au lieu d'apprendre
   -h, --aide    afficher l'aide
 @endverbatim
-Les arguments places apres le repertoire (graine, nombre de phrases,
-fichier de sortie) restent acceptes : "./projet dataset 42 5" fonctionne.
+Un corpus est un fichier texte ou un repertoire de fichiers texte ; on peut
+en donner plusieurs. L'ancienne syntaxe reste acceptee : si le deuxieme
+argument est un nombre, c'est la graine, suivie eventuellement du nombre de
+phrases et du fichier de sortie ("./projet dataset 42 5" fonctionne). Pour
+un repertoire dont le nom est un nombre, ecrire "./42".
 
 Code de retour : EXIT_SUCCESS si le texte a ete genere et sauvegarde,
 EXIT_FAILURE sinon (un message d'erreur est alors affiche).
@@ -41,6 +52,7 @@ EXIT_FAILURE sinon (un message d'erreur est alors affiche).
 #include "src/markov.h"
 #include "src/repertoire.h"
 #include "src/sauvegarde.h"
+#include "src/langue.h"
 #include "src/modele.h"
 
 /** Nombre de phrases generees par defaut. */
@@ -59,14 +71,18 @@ typedef enum {
 
 /** Parametres du programme. */
 typedef struct {
-  const char *repertoire;       /* corpus a apprendre (NULL avec -m) */
+  const char **chemins;         /* arguments positionnels (tableau alloue) */
+  unsigned int nb_chemins;      /* chemins du corpus (0 avec -m) */
   const char *modele_charge;    /* -m */
   const char *modele_sauve;     /* -s */
   const char *fichier_sortie;   /* -o ; NULL : nom choisi automatiquement */
+  const char *premier_mot;      /* -p ; NULL : premier mot tire au hasard */
   unsigned int graine;
   unsigned int nb_phrases;
   unsigned int ordre;
-  bool recursif;
+  bool recursif;                /* -r */
+  bool phrase_par_ligne;        /* -l */
+  bool tout_garder;             /* -t */
   bool graine_donnee;
   bool nb_phrases_donne;
   bool ordre_donne;
@@ -80,19 +96,29 @@ typedef struct {
 static void afficher_usage(FILE *flux, const char *programme)
 {
   fprintf(flux,
-          "Usage : %s [options] <repertoire> [graine] [nb_phrases] "
+          "Usage : %s [options] <corpus> [<corpus> ...]\n"
+          "        %s [options] <repertoire> <graine> [nb_phrases] "
           "[fichier_sortie]\n"
           "        %s [options] -m <modele>\n"
+          "Un corpus est un fichier texte ou un repertoire de fichiers "
+          "texte.\n"
           "Options :\n"
           "  -g <graine>   graine du generateur aleatoire (defaut : l'heure)\n"
           "  -n <nombre>   nombre de phrases a generer (defaut : %u)\n"
           "  -o <fichier>  fichier a creer (defaut : %s<graine>%s)\n"
-          "  -k <ordre>    ordre de la chaine de Markov : 1 (defaut) ou 2\n"
+          "  -p <mot>      faire commencer chaque phrase par ce mot\n"
+          "  -k <ordre>    ordre de la chaine de Markov, de 1 (defaut) a %u\n"
           "  -r            lire aussi les sous-repertoires\n"
+          "  -l            une phrase par ligne (poemes, chansons, listes)\n"
+          "  -t            tout garder : ne pas ecarter les passages ecrits "
+          "dans une\n"
+          "                autre langue que la langue majoritaire du "
+          "corpus\n"
           "  -s <fichier>  sauvegarder le modele appris dans ce fichier\n"
           "  -m <fichier>  charger un modele sauvegarde au lieu d'apprendre\n"
           "  -h, --aide    afficher cette aide\n",
-          programme, programme, NB_PHRASES_DEFAUT, PREFIXE_SORTIE, EXTENSION_SORTIE);
+          programme, programme, programme, NB_PHRASES_DEFAUT, PREFIXE_SORTIE,
+          EXTENSION_SORTIE, MODELE_ORDRE_MAX);
 }
 
 /**
@@ -121,8 +147,21 @@ static bool lire_entier(const char *texte, unsigned int minimum,
   return valide;
 }
 
+/** Indique si un texte est fait uniquement de chiffres decimaux. */
+static bool est_nombre(const char *texte)
+{
+  const char *c;
+  bool nombre = (texte[0] != '\0');
+
+  for (c = texte; nombre && *c != '\0'; c++) {
+    nombre = (*c >= '0' && *c <= '9');
+  }
+  return nombre;
+}
+
 /** Enregistre un nom de fichier (non vide, donne une seule fois). */
-static analyse_t lire_fichier(const char **destination, const char *valeur, const char *nom)
+static analyse_t lire_fichier(const char **destination, const char *valeur,
+                              const char *nom)
 {
   analyse_t analyse = ARGUMENTS_VALIDES;
 
@@ -174,8 +213,9 @@ static analyse_t lire_nb_phrases(parametres_t *p, const char *valeur)
   return analyse;
 }
 
-/** Applique une option a valeur (-g, -n, -o, -k, -s, -m). */
-static analyse_t appliquer_option(parametres_t *p, char option, const char *valeur)
+/** Applique une option a valeur (-g, -n, -o, -p, -k, -s, -m). */
+static analyse_t appliquer_option(parametres_t *p, char option,
+                                  const char *valeur)
 {
   analyse_t analyse = ARGUMENTS_VALIDES;
 
@@ -196,10 +236,14 @@ static analyse_t appliquer_option(parametres_t *p, char option, const char *vale
     analyse = lire_fichier(&p->modele_charge, valeur,
                            "fichier de modele (-m)");
     break;
+  case 'p':
+    analyse = lire_fichier(&p->premier_mot, valeur, "premier mot (-p)");
+    break;
   default:                                  /* 'k' */
-    if (p->ordre_donne || !lire_entier(valeur, 1u, 2u, &p->ordre)) {
-      fprintf(stderr, "Erreur : ordre invalide ou donne deux fois \"%s\" (1 "
-              "ou 2 attendu).\n", valeur);
+    if (p->ordre_donne
+        || !lire_entier(valeur, 1u, MODELE_ORDRE_MAX, &p->ordre)) {
+      fprintf(stderr, "Erreur : ordre invalide ou donne deux fois \"%s\" "
+              "(entier de 1 a %u attendu).\n", valeur, MODELE_ORDRE_MAX);
       analyse = ARGUMENTS_INVALIDES;
     }
     p->ordre_donne = true;
@@ -208,32 +252,63 @@ static analyse_t appliquer_option(parametres_t *p, char option, const char *vale
   return analyse;
 }
 
-/** Applique l'argument positionnel de rang donne. */
-static analyse_t appliquer_positionnel(parametres_t *p, unsigned int rang, const char *valeur)
+/**
+ * Interprete les arguments positionnels : tous des chemins du corpus, sauf
+ * dans l'ancienne syntaxe (deuxieme argument numerique) ou ils sont le
+ * repertoire, la graine, le nombre de phrases et le fichier de sortie.
+ */
+static analyse_t interpreter_positionnels(parametres_t *p,
+                                          unsigned int nb_positionnels)
 {
-  analyse_t analyse = ARGUMENTS_INVALIDES;
+  analyse_t analyse = ARGUMENTS_VALIDES;
 
-  switch (rang) {
-  case 0u:
-    p->repertoire = valeur;
-    analyse = ARGUMENTS_VALIDES;
-    break;
-  case 1u:
-    analyse = lire_graine(p, valeur);
-    break;
-  case 2u:
-    analyse = lire_nb_phrases(p, valeur);
-    break;
-  case 3u:
-    analyse = lire_fichier(&p->fichier_sortie, valeur, "fichier de sortie");
-    break;
-  default:
-    fprintf(stderr, "Erreur : trop d'arguments (\"%s\").\n", valeur);
-    break;
+  if (nb_positionnels >= 2u && est_nombre(p->chemins[1])) {
+    p->nb_chemins = 1u;
+    analyse = lire_graine(p, p->chemins[1]);
+    if (analyse == ARGUMENTS_VALIDES && nb_positionnels >= 3u) {
+      analyse = lire_nb_phrases(p, p->chemins[2]);
+    }
+    if (analyse == ARGUMENTS_VALIDES && nb_positionnels >= 4u) {
+      analyse = lire_fichier(&p->fichier_sortie, p->chemins[3],
+                             "fichier de sortie");
+    }
+    if (analyse == ARGUMENTS_VALIDES && nb_positionnels >= 5u) {
+      fprintf(stderr, "Erreur : trop d'arguments (\"%s\").\n",
+              p->chemins[4]);
+      analyse = ARGUMENTS_INVALIDES;
+    }
+  } else {
+    p->nb_chemins = nb_positionnels;
   }
   return analyse;
 }
 
+/** Verifie que les arguments ne se contredisent pas. */
+static analyse_t verifier_coherence(const parametres_t *p)
+{
+  analyse_t analyse = ARGUMENTS_INVALIDES;
+
+  if (p->modele_charge == NULL && p->nb_chemins == 0u) {
+    fprintf(stderr, "Erreur : corpus (fichiers ou repertoires) ou -m "
+            "<modele> attendu.\n");
+  } else if (p->modele_charge != NULL && p->nb_chemins > 0u) {
+    fprintf(stderr, "Erreur : -m charge un modele, pas de corpus a donner "
+            "(\"%s\").\n", p->chemins[0]);
+  } else if (p->modele_charge != NULL
+             && (p->ordre_donne || p->recursif || p->phrase_par_ligne
+                 || p->tout_garder)) {
+    fprintf(stderr, "Erreur : -k, -r, -l et -t concernent l'apprentissage, "
+            "pas le chargement d'un modele.\n");
+  } else {
+    analyse = ARGUMENTS_VALIDES;
+  }
+  return analyse;
+}
+
+/**
+ * Analyse la ligne de commande et remplit p. Le tableau p->chemins est
+ * alloue (a liberer avec free, meme en cas d'erreur).
+ */
 static analyse_t analyser_arguments(int argc, char *argv[], parametres_t *p)
 {
   analyse_t analyse = ARGUMENTS_VALIDES;
@@ -242,17 +317,26 @@ static analyse_t analyser_arguments(int argc, char *argv[], parametres_t *p)
   const char *argument;
   int i;
 
-  p->repertoire = NULL;
+  p->nb_chemins = 0u;
   p->modele_charge = NULL;
   p->modele_sauve = NULL;
   p->fichier_sortie = NULL;
+  p->premier_mot = NULL;
   p->graine = (unsigned int)time(NULL);
   p->nb_phrases = NB_PHRASES_DEFAUT;
   p->ordre = 1u;
   p->recursif = false;
+  p->phrase_par_ligne = false;
+  p->tout_garder = false;
   p->graine_donnee = false;
   p->nb_phrases_donne = false;
   p->ordre_donne = false;
+  /* au plus argc - 1 arguments positionnels */
+  p->chemins = malloc(((argc > 1) ? (size_t)argc : 1u) * sizeof(const char *));
+  if (p->chemins == NULL) {
+    fprintf(stderr, "Erreur : %s.\n", strerror(ENOMEM));
+    analyse = ARGUMENTS_INVALIDES;
+  }
 
   for (i = 1; analyse == ARGUMENTS_VALIDES && i < argc; i++) {
     argument = argv[i];
@@ -264,7 +348,12 @@ static analyse_t analyser_arguments(int argc, char *argv[], parametres_t *p)
         analyse = ARGUMENTS_AIDE;
       } else if (strcmp(argument, "-r") == 0) {
         p->recursif = true;
-      } else if (argument[2] == '\0' && strchr("gnoksm", argument[1]) != NULL) {
+      } else if (strcmp(argument, "-l") == 0) {
+        p->phrase_par_ligne = true;
+      } else if (strcmp(argument, "-t") == 0) {
+        p->tout_garder = true;
+      } else if (argument[2] == '\0'
+                 && strchr("gnokpsm", argument[1]) != NULL) {
         if (i + 1 >= argc) {
           fprintf(stderr, "Erreur : valeur attendue apres %s.\n", argument);
           analyse = ARGUMENTS_INVALIDES;
@@ -277,25 +366,15 @@ static analyse_t analyser_arguments(int argc, char *argv[], parametres_t *p)
         analyse = ARGUMENTS_INVALIDES;
       }
     } else {
-      analyse = appliquer_positionnel(p, nb_positionnels, argument);
+      p->chemins[nb_positionnels] = argument;
       nb_positionnels++;
     }
   }
-  /* coherence : un corpus OU un modele */
   if (analyse == ARGUMENTS_VALIDES) {
-    if (p->modele_charge == NULL && p->repertoire == NULL) {
-      fprintf(stderr, "Erreur : repertoire du corpus (ou -m <modele>) "
-              "attendu.\n");
-      analyse = ARGUMENTS_INVALIDES;
-    } else if (p->modele_charge != NULL && p->repertoire != NULL) {
-      fprintf(stderr, "Erreur : -m charge un modele, pas de repertoire a "
-              "donner (\"%s\").\n", p->repertoire);
-      analyse = ARGUMENTS_INVALIDES;
-    } else if (p->modele_charge != NULL && (p->ordre_donne || p->recursif)) {
-      fprintf(stderr, "Erreur : -k et -r concernent l'apprentissage, pas le "
-              "chargement d'un modele.\n");
-      analyse = ARGUMENTS_INVALIDES;
-    }
+    analyse = interpreter_positionnels(p, nb_positionnels);
+  }
+  if (analyse == ARGUMENTS_VALIDES) {
+    analyse = verifier_coherence(p);
   }
   return analyse;
 }
@@ -344,9 +423,11 @@ static bool ecrire(FILE *sortie, const char *texte)
 
 /**
  * Cree le fichier de sortie (vide) puis y ajoute les phrases generees, une
- * par ligne. Renvoie false en cas d'erreur (errno indique la cause).
+ * par ligne, chacune commencant par premier_mot s'il est different de
+ * HACHAGE_ABSENT. Renvoie false en cas d'erreur (errno indique la cause).
  */
-static bool sauvegarder_texte(modele_t *modele, unsigned int nb_phrases, const char *chemin)
+static bool sauvegarder_texte(modele_t *modele, unsigned int nb_phrases,
+                              unsigned int premier_mot, const char *chemin)
 {
   FILE *sortie = NULL;
   char *phrase;
@@ -361,7 +442,9 @@ static bool sauvegarder_texte(modele_t *modele, unsigned int nb_phrases, const c
     succes = (sortie != NULL);
   }
   for (i = 0u; succes && i < nb_phrases; i++) {
-    phrase = modele_generer_phrase(modele);
+    phrase = (premier_mot == HACHAGE_ABSENT)
+             ? modele_generer_phrase(modele)
+             : modele_generer_phrase_depuis(modele, premier_mot);
     succes = (phrase != NULL) && ecrire(sortie, phrase) && ecrire(sortie, "\n");
     free(phrase);
   }
@@ -378,6 +461,17 @@ static bool sauvegarder_texte(modele_t *modele, unsigned int nb_phrases, const c
   return succes;
 }
 
+/** Affiche les chemins du corpus, entre guillemets et separes par des
+    virgules. */
+static void afficher_chemins(FILE *flux, const parametres_t *p)
+{
+  unsigned int i;
+
+  for (i = 0u; i < p->nb_chemins; i++) {
+    fprintf(flux, "%s\"%s\"", (i == 0u) ? "" : ", ", p->chemins[i]);
+  }
+}
+
 /** Message d'erreur d'un echec d'apprentissage ou de chargement. */
 static void signaler_echec_modele(const parametres_t *p, int erreur)
 {
@@ -387,9 +481,84 @@ static void signaler_echec_modele(const parametres_t *p, int erreur)
             (erreur == EINVAL) ? "fichier de modele invalide"
                                : strerror(erreur));
   } else {
-    fprintf(stderr, "Erreur : impossible d'apprendre a partir du "
-            "repertoire \"%s\" : %s.\n", p->repertoire, strerror(erreur));
+    fprintf(stderr, "Erreur : impossible d'apprendre a partir de ");
+    afficher_chemins(stderr, p);
+    fprintf(stderr, " : %s.\n", (erreur == EINVAL)
+                                ? "ni fichier ordinaire ni repertoire"
+                                : strerror(erreur));
   }
+}
+
+/** Apprend ou charge le modele et affiche le bilan ; NULL en cas d'echec
+    (un message d'erreur est alors affiche). */
+static modele_t *obtenir_modele(const parametres_t *p)
+{
+  modele_options_t options;
+  repertoire_bilan_t bilan;
+  modele_t *modele;
+
+  if (p->modele_charge != NULL) {
+    modele = modele_charger(p->modele_charge, p->graine);
+    if (modele != NULL) {
+      printf("Modele charge depuis \"%s\" : %u mots distincts (chaine "
+             "d'ordre %u).\n", p->modele_charge, modele_nb_mots(modele),
+             modele_ordre(modele));
+    }
+  } else {
+    options.ordre = p->ordre;
+    options.recursif = p->recursif;
+    options.phrase_par_ligne = p->phrase_par_ligne;
+    options.filtrer_langues = !p->tout_garder;
+    modele = modele_apprendre_corpus(p->chemins, p->nb_chemins, p->graine,
+                                     &options, &bilan);
+    if (modele != NULL) {
+      printf("Apprentissage : %zu fichier(s), %zu phrases, %zu mots dont %u "
+             "distincts (chaine d'ordre %u).\n", bilan.nb_fichiers,
+             bilan.nb_phrases - bilan.nb_phrases_ecartees,
+             bilan.nb_mots - bilan.nb_mots_ecartes, modele_nb_mots(modele),
+             modele_ordre(modele));
+      if (bilan.langue != LANGUE_INCONNUE) {
+        printf("Langue du corpus : %s ; %zu phrase(s) ecrite(s) dans une "
+               "autre langue ecartee(s) (%zu mots).\n",
+               langue_nom(bilan.langue), bilan.nb_phrases_ecartees,
+               bilan.nb_mots_ecartes);
+      } else if (!p->tout_garder) {
+        printf("Langue du corpus non reconnue : aucun passage ecarte.\n");
+      }
+    }
+  }
+  if (modele == NULL) {
+    signaler_echec_modele(p, errno);
+  }
+  return modele;
+}
+
+/**
+ * Identifiant du premier mot demande (-p), ou HACHAGE_ABSENT s'il n'y en a
+ * pas. Renvoie false (avec un message) si le mot n'est pas utilisable.
+ */
+static bool trouver_premier_mot(const parametres_t *p, const modele_t *modele,
+                                unsigned int *mot)
+{
+  bool trouve = true;
+
+  *mot = HACHAGE_ABSENT;
+  if (p->premier_mot != NULL) {
+    *mot = modele_mot(modele, p->premier_mot);
+    if (*mot == HACHAGE_ABSENT) {
+      trouve = false;
+      if (errno == ENOENT) {
+        fprintf(stderr, "Erreur : le mot \"%s\" n'apparait pas dans le "
+                "corpus.\n", p->premier_mot);
+      } else if (errno == EINVAL) {
+        fprintf(stderr, "Erreur : \"%s\" n'est pas un mot (des lettres "
+                "seulement, sans espace ni apostrophe).\n", p->premier_mot);
+      } else {
+        fprintf(stderr, "Erreur : %s.\n", strerror(errno));
+      }
+    }
+  }
+  return trouve;
 }
 
 /** Execute le programme ; toute la memoire allouee est liberee. */
@@ -398,30 +567,15 @@ static int executer(const parametres_t *p)
   modele_t *modele;
   char *chemin_automatique = NULL;
   const char *chemin = p->fichier_sortie;
+  unsigned int premier_mot = HACHAGE_ABSENT;
   int code = EXIT_FAILURE;
 
-  /* 1. Apprentissage ou chargement */
-  if (p->modele_charge != NULL) {
-    modele = modele_charger(p->modele_charge, p->graine);
-  } else {
-    modele = modele_apprendre(p->repertoire, p->graine, p->ordre, p->recursif);
-  }
-  if (modele == NULL) {
-    signaler_echec_modele(p, errno);
-  } else if (!modele_peut_generer(modele)) {
-    fprintf(stderr, "Erreur : aucun mot trouve dans le repertoire "
-            "\"%s\".\n", p->repertoire);
-  } else {
-    if (p->modele_charge != NULL) {
-      printf("Modele charge depuis \"%s\" : %u mots distincts (chaine "
-             "d'ordre %u).\n", p->modele_charge, modele_nb_mots(modele),
-             modele_ordre(modele));
-    } else {
-      printf("Apprentissage : %u mots distincts dans \"%s\"%s (chaine "
-             "d'ordre %u).\n", modele_nb_mots(modele), p->repertoire,
-             p->recursif ? " et ses sous-repertoires" : "",
-             modele_ordre(modele));
-    }
+  /* 1. Apprentissage ou chargement, puis premier mot eventuel */
+  modele = obtenir_modele(p);
+  if (modele != NULL && !modele_peut_generer(modele)) {
+    fprintf(stderr, "Erreur : aucun mot a apprendre dans %s.\n",
+            (p->modele_charge != NULL) ? "le modele" : "le corpus");
+  } else if (modele != NULL && trouver_premier_mot(p, modele, &premier_mot)) {
     code = EXIT_SUCCESS;
     /* 2. Sauvegarde eventuelle du modele */
     if (p->modele_sauve != NULL) {
@@ -445,7 +599,7 @@ static int executer(const parametres_t *p)
     }
     if (code == EXIT_SUCCESS) {
       printf("Graine : %u\n\n", p->graine);
-      if (sauvegarder_texte(modele, p->nb_phrases, chemin)) {
+      if (sauvegarder_texte(modele, p->nb_phrases, premier_mot, chemin)) {
         printf("\nTexte de %u phrase(s) sauvegarde dans \"%s\".\n",
                p->nb_phrases, chemin);
       } else {
@@ -479,5 +633,6 @@ int main(int argc, char *argv[])
     code = executer(&parametres);
     break;
   }
+  free(parametres.chemins);
   return code;
 }
