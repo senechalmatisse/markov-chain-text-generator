@@ -14,10 +14,14 @@ par texte, puis on lui demande de conclure.
 PROFILS DE LANGUES
   Chaque langue reconnue a un profil : la liste de ses mots-outils les plus
   frequents (articles, pronoms, prepositions, auxiliaires...), ecrits sans
-  accents. Dans un texte courant, cette centaine de mots forme environ la
-  moitie des mots : elle suffit a reconnaitre la langue.
-  Un meme mot peut appartenir a plusieurs profils ("la" : francais,
-  espagnol, italien).
+  accents comme les mots de l'iterateur. Dans un texte courant, cette
+  centaine de mots forme environ la moitie des mots : elle suffit a
+  reconnaitre la langue. Un meme mot peut appartenir a plusieurs profils
+  ("la" : francais, espagnol, italien, catalan, roumain, esperanto) ; des
+  langues proches (danois et norvegien, espagnol et catalan) se distinguent
+  par les mots qu'elles ne partagent pas ("mig", "af", "nu" en danois ;
+  "meg", "av", "na" en norvegien). Ajouter une langue revient a ajouter
+  une valeur a langue_t, son nom et ses mots-outils dans langue.c.
 
 PASSAGES
   Les phrases consecutives d'un meme texte sont regroupees en PASSAGES d'au
@@ -45,8 +49,8 @@ DECISION (langue_detecteur_conclure)
   replique courte ou une liste de noms propres, faites de mots connus, sont
   gardees.
 
-LIMITES : sept langues ont un profil (cf. langue_t). Un corpus ecrit dans
-une autre langue a une langue "inconnue" : rien n'est alors ecarte.
+LIMITES : dix-neuf langues ecrites en alphabet latin ont un profil (cf. langue_t).
+Un corpus ecrit dans une autre langue a une langue "inconnue" : rien n'est alors ecarte.
 
 Notations utilisees dans les contrats :
   conclu(d)       = langue_detecteur_est_conclu(d)
@@ -70,6 +74,18 @@ typedef enum {
   LANGUE_ITALIEN,       /**< italien */
   LANGUE_PORTUGAIS,     /**< portugais */
   LANGUE_NEERLANDAIS,   /**< neerlandais */
+  LANGUE_LATIN,         /**< latin */
+  LANGUE_CATALAN,       /**< catalan */
+  LANGUE_SUEDOIS,       /**< suedois */
+  LANGUE_DANOIS,        /**< danois */
+  LANGUE_NORVEGIEN,     /**< norvegien (bokmal) */
+  LANGUE_FINNOIS,       /**< finnois */
+  LANGUE_POLONAIS,      /**< polonais */
+  LANGUE_TCHEQUE,       /**< tcheque */
+  LANGUE_HONGROIS,      /**< hongrois */
+  LANGUE_ROUMAIN,       /**< roumain */
+  LANGUE_TURC,          /**< turc */
+  LANGUE_ESPERANTO,     /**< esperanto */
   NB_LANGUES            /**< nombre de valeurs (langue inconnue comprise) */
 } langue_t;
 

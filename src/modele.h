@@ -9,39 +9,58 @@ sans reparcourir le corpus.
 Un modele contient :
   - la table des mots (cles {a..z}, mot 0 = "" = frontiere de phrase) ;
   - la table des bigrammes (paires de mots consecutifs, paire 0 = (0, 0)) ;
-  - le lexique (graphies avec accents et majuscules, liaisons, marques de dialogue) ;
+  - le lexique (graphies avec accents et majuscules, liaisons, marques de
+    dialogue, et accents des homographes selon les deux mots precedents) ;
   - la chaine de Markov, d'ordre 1 (un etat = un mot), 2 (un etat = un
     bigramme : le mot suivant depend des deux precedents) ou k, jusqu'a
     MODELE_ORDRE_MAX (un etat = les k derniers mots) ;
   - a partir de l'ordre 3, la table des etats (k-uplets de mots) ;
+  - eventuellement une chaine de repli, d'ordre j < k (et ses j-uplets si
+    j >= 3) : quand le contexte des k derniers mots n'a qu'un successeur
+    dans le corpus, le mot suivant est tire selon les j derniers mots, ce
+    qui evite de recopier des phrases entieres du corpus ;
   - la chaine de ponctuation (ponctuation finale selon le dernier mot).
-Les phrases generees ont ainsi leurs accents ("ete" ecrit avec ses accents),
-leurs majuscules ("Jean Valjean"), leurs elisions et traits d'union
-("c'etait", "peut-etre", "dit-il"), les virgules les plus frequentes, leurs
-tirets de dialogue et leurs guillemets (toujours refermes), et une
-ponctuation finale tiree selon le corpus ('.', '!', '?', '...').
+Les phrases generees ont ainsi leurs accents ("ete" retrouve ses deux
+accents aigus ; le verbe "a" et la preposition, qui prend un accent grave,
+sont distingues selon les mots precedents), leurs majuscules ("Jean
+Valjean"), leurs elisions et traits d'union ("c'etait", "peut-etre",
+"dit-il"), les virgules et la ponctuation interne les plus frequentes
+(", ", "; ", ": ", "! ", "? ", "... "), leurs tirets de dialogue, leurs
+guillemets et leurs parentheses (toujours refermes), et une ponctuation
+finale tiree selon le corpus ('.', '!', '?', '...').
 
 FORMAT DU FICHIER (texte UTF-8, une information par ligne, champs separes
 par une espace ; "-" designe une chaine vide ou une valeur absente) :
 @verbatim
-    modele-markov 2
+    modele-markov 3
     ordre <k>
+    repli <j>                              (0 : sans chaine de repli)
     mots <n>
     <cle> <variante choisie|-> <casse> <v> <variante 0> ... <variante v-1>
                                                           (n lignes)
     bigrammes <b>
     <premier> <second> <variante|-> <casse|-> <liaison> <marques>
                                                           (b lignes)
+    contextes <c>
+    <mot avant> <bigramme> <variante>      (c lignes : les exceptions)
     etats <e>                              (seulement si k >= 3)
     <mot 1> ... <mot k>                    (e lignes : un k-uplet par etat)
     chaine <nombre d'etats>
     <t> <etat 1> <poids 1> ... <etat t> <poids t>        (une ligne par etat)
+    etats_repli <e'>                       (seulement si j >= 3)
+    <mot 1> ... <mot j>                    (e' lignes)
+    chaine_repli <nombre d'etats>          (seulement si j >= 1)
+    <t> <etat 1> <poids 1> ...                           (une ligne par etat)
     ponctuation <5 + n>
     <t> <etat 1> <poids 1> ...                           (une ligne par etat)
     fin
 @endverbatim
 Le mot 0 s'ecrit "- - 0 0". Les etats d'arrivee d'une ligne sont croissants.
-La chaine a n etats a l'ordre 1, b a l'ordre 2 et e au-dela.
+Une chaine d'ordre 1 a n etats, une chaine d'ordre 2 en a b, une chaine
+d'ordre superieur un par n-uplet. Seuls les contextes de deux mots dont la
+variante differe de celle du bigramme sont ecrits. Les fichiers de la
+version 2 ("modele-markov 2" : ni ligne repli ni section contextes) restent
+lisibles.
 */
 #ifndef __MODELE_H__
 #define __MODELE_H__
@@ -55,7 +74,8 @@ La chaine a n etats a l'ordre 1, b a l'ordre 2 et e au-dela.
 /** Type abstrait modele (structure definie dans modele.c). */
 typedef struct modele_s modele_t;
 
-/** Longueur maximale d'une phrase generee, en mots (la phrase est ensuite terminee par un point). */
+/** Longueur maximale d'une phrase generee, en mots (la phrase est ensuite
+    terminee par un point). */
 #define MODELE_NB_MOTS_MAX_PHRASE 80u
 
 /** Ordre maximal de la chaine d'un modele. */
@@ -65,14 +85,17 @@ typedef struct modele_s modele_t;
 typedef struct {
   unsigned int ordre;     /**< ordre de la chaine, de 1 a MODELE_ORDRE_MAX */
   bool recursif;          /**< lire aussi les sous-repertoires */
-  bool phrase_par_ligne;  /**< chaque fin de ligne termine une phrase (poemes, chansons, listes) */
+  bool phrase_par_ligne;  /**< chaque fin de ligne termine une phrase
+                               (poemes, chansons, listes) */
   bool filtrer_langues;   /**< ecarter les passages qui ne sont pas dans la
                                langue majoritaire du corpus (cf. langue.h) */
+  unsigned int ordre_repli; /**< ordre de la chaine de repli : 0 (sans
+                                 repli) ou de 1 a ordre - 1 */
 } modele_options_t;
 
 /*
 Notations : peut_generer(m) = modele_peut_generer(m) ;
-            nb_mots(m)      = modele_nb_mots(m).
+            nb_mots(m) = modele_nb_mots(m).
 */
 
 /**
@@ -85,9 +108,11 @@ Notations : peut_generer(m) = modele_peut_generer(m) ;
  * @param  bilan       NULL, ou structure qui recoit le bilan de la lecture
  *                     (fichiers, phrases, mots, langue, passages ecartes).
  * @pre    chemins != NULL ; nb_chemins >= 1 ; chaque chemins[i] != NULL ;
- *         options != NULL ; 1 <= options->ordre <= MODELE_ORDRE_MAX.
+ *         options != NULL ; 1 <= options->ordre <= MODELE_ORDRE_MAX ;
+ *         options->ordre_repli < options->ordre.
  * @post   si le resultat m est non NULL : modele_ordre(m) == options->ordre,
- *         modele_mots(m) contient les mots appris et *bilan est rempli (cf.
+ *         modele_ordre_repli(m) == options->ordre_repli, modele_mots(m)
+ *         contient les mots appris et *bilan est rempli (cf.
  *         repertoire_apprendre_corpus). En cas d'echec, *bilan est inchange.
  * @return le modele (a liberer avec modele_detruire), ou NULL en cas
  *         d'echec, errno indiquant la cause (cf.
@@ -101,9 +126,9 @@ modele_t *modele_apprendre_corpus(const char *const *chemins,
 
 /**
  * @brief  Apprend un modele a partir des fichiers d'un repertoire (ou d'un
- *         fichier), sans filtre de langue : equivaut a
+ *         fichier), sans filtre de langue ni repli : equivaut a
  *         modele_apprendre_corpus avec ce seul chemin et les options
- *         { ordre, recursif, false, false }.
+ *         { ordre, recursif, false, false, 0 }.
  * @param  chemin_repertoire  repertoire du corpus.
  * @param  graine             graine du generateur aleatoire.
  * @param  ordre              ordre de la chaine.
@@ -140,9 +165,10 @@ bool modele_sauvegarder(const modele_t *m, const char *chemin_fichier);
  * @param  chemin_fichier  fichier du modele.
  * @param  graine          graine du generateur aleatoire.
  * @pre    chemin_fichier != NULL.
- * @post   si le resultat est non NULL, il satisfait les memes proprietes
+ * @post   si le resultat m est non NULL, il satisfait les memes proprietes
  *         qu'un modele appris (en particulier, modele_generer_phrase et
- *         modele_generer_phrase_depuis peuvent l'utiliser sans risque).
+ *         modele_generer_phrase_depuis peuvent l'utiliser sans risque) ;
+ *         modele_ordre_repli(m) < modele_ordre(m).
  * @return le modele (a liberer avec modele_detruire), ou NULL en cas
  *         d'echec : fichier illisible (errno de fopen), format invalide
  *         (EINVAL), memoire insuffisante (ENOMEM), erreur de lecture (EIO).
@@ -189,6 +215,29 @@ const hachage_paires_t *modele_bigrammes(const modele_t *m);
 const hachage_nuplets_t *modele_etats(const modele_t *m);
 
 /**
+ * @brief  Ordre de la chaine de repli : 0 si le modele n'en a pas, sinon de
+ *         1 a modele_ordre(m) - 1.
+ * @pre    m != NULL.
+ */
+unsigned int modele_ordre_repli(const modele_t *m);
+
+/**
+ * @brief  Chaine de repli (finalisee) : elle a les etats d'une chaine
+ *         d'ordre modele_ordre_repli(m) apprise sur le meme corpus.
+ * @pre    m != NULL.
+ * @return la chaine, ou NULL si modele_ordre_repli(m) == 0.
+ */
+const markov_t *modele_repli(const modele_t *m);
+
+/**
+ * @brief  Table des etats de la chaine de repli : les j-uplets de mots,
+ *         j etant l'ordre de repli.
+ * @pre    m != NULL.
+ * @return la table si modele_ordre_repli(m) >= 3 ; NULL sinon.
+ */
+const hachage_nuplets_t *modele_etats_repli(const modele_t *m);
+
+/**
  * @brief  Retrouve un mot du modele a partir d'une de ses graphies, avec ou
  *         sans accents et majuscules ("Marius", "ETE", "ete").
  * @param  m        le modele.
@@ -217,19 +266,24 @@ const markov_t *modele_ponctuation(const modele_t *m);
  * @brief  Genere une phrase aleatoire : marche aleatoire dans la chaine
  *         depuis l'etat "debut de phrase" jusqu'a y revenir (au plus
  *         MODELE_NB_MOTS_MAX_PHRASE mots), puis ponctuation finale tiree
- *         selon le dernier mot.
+ *         selon le dernier mot. Avec une chaine de repli, un mot est tire
+ *         dans la chaine de repli (selon les j derniers mots) quand le
+ *         contexte des k derniers mots n'a qu'un successeur dans le corpus
+ *         ou n'y apparait pas.
  * @pre    m != NULL ; peut_generer(m).
  * @post   si le resultat est non NULL : c'est une chaine UTF-8 non vide,
  *         sans saut de ligne. Elle commence par une lettre majuscule (sauf
  *         si cette lettre n'en a pas, comme l'eszett), precedee
- *         eventuellement d'un tiret de dialogue (tiret cadratin et espace)
- *         puis d'un guillemet francais ouvrant. Elle se termine
- *         par ".", "!", "?" ou "..." (ou sans ponctuation, seulement si le
- *         corpus a ete lu "une phrase par ligne"), suivis eventuellement
- *         d'un guillemet francais fermant. Les guillemets sont bien formes :
- *         jamais deux ouverts a la fois, et tout guillemet ouvert est
- *         referme. Ses mots (au sens de l'iterateur) sont tous des mots du
- *         modele. Les generateurs des chaines ont avance.
+ *         eventuellement d'un tiret de dialogue (tiret cadratin et espace),
+ *         d'une parenthese ouvrante puis d'un guillemet francais ouvrant.
+ *         Elle se termine par ".", "!", "?" ou "..." (ou sans ponctuation,
+ *         seulement si le corpus a ete lu "une phrase par ligne"),
+ *         precedes ou suivis des marques fermantes (guillemet francais,
+ *         parenthese). Les guillemets et les parentheses sont bien formes :
+ *         jamais deux guillemets ni deux parentheses ouverts a la fois,
+ *         bien imbriques, et tout ce qui est ouvert est referme. Ses mots
+ *         (au sens de l'iterateur) sont tous des mots du modele. Les
+ *         generateurs des chaines ont avance.
  * @return la phrase (a liberer avec free), ou NULL si la memoire manque
  *         (errno == ENOMEM ; le modele reste utilisable).
  * @note   Complexite : O(longueur de la phrase * log k_max).

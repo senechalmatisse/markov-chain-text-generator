@@ -36,16 +36,15 @@ clean:
 # ==========================================================================
 
 .PHONY: all test clean test_hachage test_markov test_repertoire \
-        test_sauvegarde test_lexique test_langue test_modele test_programme \
-        test_defaillances test_aleatoire test_memoire couverture doc \
-        installer_hook nettoyer_binaires
+        test_sauvegarde test_lexique test_langue test_mail test_modele \
+        test_programme test_defaillances test_aleatoire test_memoire \
+        couverture doc installer_hook nettoyer_binaires
 
 # Modules ajoutes au projet, et ensemble des modules
-OBJETS_AJOUTES = src/lexique.o src/langue.o src/modele.o
-OBJETS_MODULES = src/hachage.o src/markov.o src/repertoire.o \
-                 src/sauvegarde.o $(OBJETS_AJOUTES)
+OBJETS_AJOUTES = src/lexique.o src/langue.o src/mail.o src/modele.o
+OBJETS_MODULES = src/hachage.o src/markov.o src/repertoire.o src/sauvegarde.o $(OBJETS_AJOUTES)
 SOURCES_MODULES = $(OBJETS_MODULES:.o=.c)
-TESTS_UNITAIRES = hachage markov repertoire sauvegarde lexique langue modele
+TESTS_UNITAIRES = hachage markov repertoire sauvegarde lexique langue mail modele
 
 # --- Dependances vers les en-tetes : recompilation si un .h change --------
 main.o: src/hachage.h src/markov.h src/repertoire.h src/sauvegarde.h \
@@ -53,40 +52,41 @@ main.o: src/hachage.h src/markov.h src/repertoire.h src/sauvegarde.h \
 src/hachage.o: src/hachage.h src/contrat.h
 src/markov.o: src/markov.h src/contrat.h
 src/repertoire.o: src/repertoire.h src/hachage.h src/markov.h src/lexique.h \
-                  src/langue.h src/texte.h src/contrat.h
+                  src/langue.h src/mail.h src/texte.h src/contrat.h
 src/sauvegarde.o: src/sauvegarde.h src/contrat.h
-src/lexique.o: src/lexique.h src/texte.h src/contrat.h
+src/lexique.o: src/lexique.h src/hachage.h src/texte.h src/contrat.h
 src/langue.o: src/langue.h src/hachage.h src/contrat.h
+src/mail.o: src/mail.h src/contrat.h
 src/modele.o: src/modele.h src/repertoire.h src/sauvegarde.h src/hachage.h \
-              src/markov.h src/lexique.h src/langue.h src/texte.h \
-              src/contrat.h
+              src/markov.h src/lexique.h src/langue.h src/texte.h src/contrat.h
 tests/test_hachage.o: src/hachage.h tests/outils_tests.h
 tests/test_markov.o: src/markov.h tests/outils_tests.h
-tests/test_repertoire.o: src/repertoire.h src/hachage.h src/markov.h \
+tests/test_repertoire.o: src/repertoire.h src/mail.h src/hachage.h src/markov.h \
                          src/lexique.h src/langue.h src/texte.h \
                          tests/outils_tests.h
 tests/test_sauvegarde.o: src/sauvegarde.h tests/outils_tests.h
 tests/test_lexique.o: src/lexique.h src/texte.h tests/outils_tests.h
 tests/test_langue.o: src/langue.h src/hachage.h tests/outils_tests.h
+tests/test_mail.o: src/mail.h tests/outils_tests.h
 tests/test_modele.o tests/test_programme.o tests/test_defaillances.o: \
   src/modele.h src/repertoire.h src/hachage.h src/markov.h src/lexique.h \
   src/langue.h src/texte.h src/sauvegarde.h tests/outils_tests.h
 
 # --- Edition de liens des regles d'origine --------------------------------
-# Le programme utilise aussi les modules lexique, langue et modele, et
-# repertoire.c s'appuie sur markov, hachage, lexique et langue : les regles
-# d'origine ne les lient pas. On les ajoute a l'edition de liens de ces
+# Le programme utilise aussi les modules lexique, langue, mail et modele,
+# et repertoire.c s'appuie sur markov, hachage, lexique, langue et mail :
+# les regles d'origine ne les lient pas. On les ajoute a l'edition de liens de ces
 # seules cibles (une variable "private" n'est pas transmise a la compilation
 # des dependances).
-OBJETS_REPERTOIRE = src/hachage.o src/markov.o src/lexique.o src/langue.o
+OBJETS_REPERTOIRE = src/hachage.o src/markov.o src/lexique.o src/langue.o src/mail.o
 all: $(OBJETS_AJOUTES)
 all: private CFLAGS += $(OBJETS_AJOUTES) -lm
 test_repertoire: $(OBJETS_REPERTOIRE)
 test_repertoire: private CFLAGS += $(OBJETS_REPERTOIRE) -lm
 
-# --- Nouveaux tests (meme forme que les regles d'origine) -----------------
-test_lexique: tests/test_lexique.o src/lexique.o
-	gcc tests/test_lexique.o src/lexique.o -o tests/test_lexique $(CFLAGS)
+# --- Nouveaux tests  ------------------------------------------------------
+test_lexique: tests/test_lexique.o src/lexique.o src/hachage.o
+	gcc tests/test_lexique.o src/lexique.o src/hachage.o -o tests/test_lexique $(CFLAGS)
 	./tests/test_lexique
 	rm tests/test_lexique
 
@@ -95,6 +95,11 @@ test_langue: tests/test_langue.o src/langue.o src/hachage.o
 	  $(CFLAGS)
 	./tests/test_langue
 	rm tests/test_langue
+
+test_mail: tests/test_mail.o src/mail.o
+	gcc tests/test_mail.o src/mail.o -o tests/test_mail $(CFLAGS)
+	./tests/test_mail
+	rm tests/test_mail
 
 test_modele: tests/test_modele.o $(OBJETS_MODULES)
 	gcc tests/test_modele.o $(OBJETS_MODULES) -o tests/test_modele $(CFLAGS)
@@ -129,8 +134,7 @@ test_aleatoire: tests/test_aleatoire.c tests/outils_tests.h $(SOURCES_MODULES)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/test_aleatoire
 	rm tests/test_aleatoire
 
-test: test_lexique test_langue test_modele test_programme test_defaillances \
-      test_aleatoire
+test: test_lexique test_langue test_mail test_modele test_programme test_defaillances test_aleatoire
 
 # --- Verification de la memoire (valgrind) --------------------------------
 # Le programme final (cas nominaux et cas d'erreur) puis chaque test sont
@@ -147,8 +151,9 @@ test: test_memoire
 
 test_memoire: all $(OBJETS_MODULES) tests/test_hachage.o tests/test_markov.o \
               tests/test_repertoire.o tests/test_sauvegarde.o \
-              tests/test_lexique.o tests/test_langue.o tests/test_modele.o \
-              tests/test_programme.o tests/test_defaillances.o
+              tests/test_lexique.o tests/test_langue.o tests/test_mail.o \
+              tests/test_modele.o tests/test_programme.o \
+              tests/test_defaillances.o
 	@command -v valgrind > /dev/null || \
 	  { echo "ERREUR : valgrind est necessaire (apt install valgrind)"; exit 1; }
 	@echo "=== Memoire du programme principal (valgrind) ==="
@@ -173,8 +178,18 @@ test_memoire: all $(OBJETS_MODULES) tests/test_hachage.o tests/test_markov.o \
 	@cmp -s $(REPERTOIRE_MEMOIRE)/sortie_4.txt \
 	  $(REPERTOIRE_MEMOIRE)/recharge_4.txt \
 	  || { echo "ERREUR : le modele d'ordre 4 recharge differe"; exit 1; }
+	$(VALGRIND) ./projet -k 5 -b 3 -l -g 9 -n 10 \
+	  -s $(REPERTOIRE_MEMOIRE)/modele_5.txt \
+	  -o $(REPERTOIRE_MEMOIRE)/sortie_5.txt dataset/en > /dev/null
+	$(VALGRIND) ./projet -m $(REPERTOIRE_MEMOIRE)/modele_5.txt -g 9 -n 10 \
+	  -o $(REPERTOIRE_MEMOIRE)/recharge_5.txt > /dev/null
+	@cmp -s $(REPERTOIRE_MEMOIRE)/sortie_5.txt \
+	  $(REPERTOIRE_MEMOIRE)/recharge_5.txt \
+	  || { echo "ERREUR : le modele avec repli recharge differe"; exit 1; }
+	$(VALGRIND) ./projet -k 2 -g 3 -n 5 \
+	  -o $(REPERTOIRE_MEMOIRE)/courriers.txt exemples/courriers.mbox > /dev/null
 	@for V_Vc_Fichier in texte_genere_42.txt texte_genere_42_2.txt sortie.txt \
-	  sortie_4.txt; do \
+	  sortie_4.txt sortie_5.txt courriers.txt; do \
 	  [ -s "$(REPERTOIRE_MEMOIRE)/$${V_Vc_Fichier}" ] || \
 	    { echo "ERREUR : $${V_Vc_Fichier} non genere"; exit 1; }; \
 	done
@@ -192,9 +207,11 @@ test_memoire: all $(OBJETS_MODULES) tests/test_hachage.o tests/test_markov.o \
 	  -o tests/memoire_repertoire $(CFLAGS)
 	gcc tests/test_sauvegarde.o src/sauvegarde.o -o tests/memoire_sauvegarde \
 	  $(CFLAGS)
-	gcc tests/test_lexique.o src/lexique.o -o tests/memoire_lexique $(CFLAGS)
+	gcc tests/test_lexique.o src/lexique.o src/hachage.o \
+	  -o tests/memoire_lexique $(CFLAGS)
 	gcc tests/test_langue.o src/langue.o src/hachage.o -o tests/memoire_langue \
 	  $(CFLAGS)
+	gcc tests/test_mail.o src/mail.o -o tests/memoire_mail $(CFLAGS)
 	gcc tests/test_modele.o $(OBJETS_MODULES) -o tests/memoire_modele $(CFLAGS)
 	gcc tests/test_programme.o $(OBJETS_MODULES) -o tests/memoire_programme \
 	  $(CFLAGS)
@@ -280,7 +297,7 @@ clean: nettoyer_binaires
 nettoyer_binaires:
 	rm -f projet tests/test_hachage tests/test_markov tests/test_repertoire \
 	  tests/test_sauvegarde tests/test_lexique tests/test_langue \
-	  tests/test_modele \
+	  tests/test_mail tests/test_modele \
 	  tests/test_programme tests/test_defaillances tests/test_aleatoire \
 	  tests/memoire_*
 	rm -rf $(COUVERTURE) doc

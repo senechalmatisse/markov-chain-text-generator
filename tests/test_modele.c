@@ -2,9 +2,10 @@
 Fichier test_modele.c
 
 Tests unitaires du module modele (cf. src/modele.h) : generation de
-phrases lisibles (accents, liaisons, dialogues), ordres 1 a
-MODELE_ORDRE_MAX, premier mot impose, corpus de plusieurs chemins, lecture
-"une phrase par ligne", filtre de langue, sauvegarde, chargement et refus
+phrases lisibles (accents, homographes, liaisons, ponctuation interne,
+dialogues, parentheses), ordres 1 a MODELE_ORDRE_MAX, chaine de repli,
+premier mot impose, corpus de plusieurs chemins, lecture "une phrase par
+ligne", filtre de langue, sauvegarde, chargement (formats 2 et 3) et refus
 des fichiers invalides.
 */
 #define _POSIX_C_SOURCE 200809L
@@ -22,6 +23,32 @@ des fichiers invalides.
 
 /** Modele sauvegarde attendu pour le corpus "Le chat dort." (ordre 1). */
 static const char MODELE_VALIDE[] =
+  "modele-markov 3\n"
+  "ordre 1\n"
+  "repli 0\n"
+  "mots 4\n"
+  "- - 0 0\n"
+  "le 0 0 1 le\n"
+  "chat 0 0 1 chat\n"
+  "dort 0 0 1 dort\n"
+  "bigrammes 4\n"
+  "0 0 - - 0 0\n"
+  "0 1 - - 0 0\n"
+  "1 2 - 0 0 0\n"
+  "2 3 - 0 0 0\n"
+  "contextes 0\n"
+  "chaine 4\n"
+  "1 1 1\n"
+  "1 2 1\n"
+  "1 3 1\n"
+  "1 0 1\n"
+  "ponctuation 9\n"
+  "0\n0\n0\n0\n0\n0\n0\n0\n"
+  "1 0 1\n"
+  "fin\n";
+
+/** Le meme modele, au format de la version 2 (ni repli ni contextes). */
+static const char MODELE_VERSION_2[] =
   "modele-markov 2\n"
   "ordre 1\n"
   "mots 4\n"
@@ -46,8 +73,9 @@ static const char MODELE_VALIDE[] =
 
 /** Modele sauvegarde attendu pour le meme corpus, a l'ordre 3. */
 static const char MODELE_VALIDE_3[] =
-  "modele-markov 2\n"
+  "modele-markov 3\n"
   "ordre 3\n"
+  "repli 0\n"
   "mots 4\n"
   "- - 0 0\n"
   "le 0 0 1 le\n"
@@ -58,6 +86,7 @@ static const char MODELE_VALIDE_3[] =
   "0 1 - - 0 0\n"
   "1 2 - 0 0 0\n"
   "2 3 - 0 0 0\n"
+  "contextes 0\n"
   "etats 4\n"
   "0 0 0\n"
   "0 0 1\n"
@@ -71,6 +100,105 @@ static const char MODELE_VALIDE_3[] =
   "ponctuation 9\n"
   "0\n0\n0\n0\n0\n0\n0\n0\n"
   "1 0 1\n"
+  "fin\n";
+
+/** Modele sauvegarde attendu pour le meme corpus, a l'ordre 4 avec un repli a l'ordre 3. */
+static const char MODELE_VALIDE_4_3[] =
+  "modele-markov 3\n"
+  "ordre 4\n"
+  "repli 3\n"
+  "mots 4\n"
+  "- - 0 0\n"
+  "le 0 0 1 le\n"
+  "chat 0 0 1 chat\n"
+  "dort 0 0 1 dort\n"
+  "bigrammes 4\n"
+  "0 0 - - 0 0\n"
+  "0 1 - - 0 0\n"
+  "1 2 - 0 0 0\n"
+  "2 3 - 0 0 0\n"
+  "contextes 0\n"
+  "etats 4\n"
+  "0 0 0 0\n"
+  "0 0 0 1\n"
+  "0 0 1 2\n"
+  "0 1 2 3\n"
+  "chaine 4\n"
+  "1 1 1\n"
+  "1 2 1\n"
+  "1 3 1\n"
+  "1 0 1\n"
+  "etats_repli 4\n"
+  "0 0 0\n"
+  "0 0 1\n"
+  "0 1 2\n"
+  "1 2 3\n"
+  "chaine_repli 4\n"
+  "1 1 1\n"
+  "1 2 1\n"
+  "1 3 1\n"
+  "1 0 1\n"
+  "ponctuation 9\n"
+  "0\n0\n0\n0\n0\n0\n0\n0\n"
+  "1 0 1\n"
+  "fin\n";
+
+/** Corpus d'homographes : "la" (article) apres "Elle est", mais "la" avec
+    accent grave (adverbe) apres "Qui est" et "Il est". */
+static const char CORPUS_HOMOGRAPHES[] =
+  "Qui est l\xC3\xA0 ? Elle est la reine. Il est l\xC3\xA0.";
+
+/** Modele sauvegarde attendu pour CORPUS_HOMOGRAPHES, a l'ordre 2 avec un
+    repli a l'ordre 1 : le bigramme (est, la) choisit l'accent grave, le
+    contexte (elle, (est, la)) est une exception. */
+static const char MODELE_VALIDE_REPLI[] =
+  "modele-markov 3\n"
+  "ordre 2\n"
+  "repli 1\n"
+  "mots 7\n"
+  "- - 0 0\n"
+  "qui 0 0 1 qui\n"
+  "est 0 0 1 est\n"
+  "la 0 0 2 l\xC3\xA0 la\n"
+  "elle 0 0 1 elle\n"
+  "reine 0 0 1 reine\n"
+  "il 0 0 1 il\n"
+  "bigrammes 9\n"
+  "0 0 - - 0 0\n"
+  "0 1 0 - 0 0\n"
+  "1 2 0 0 0 0\n"
+  "2 3 0 0 0 0\n"
+  "0 4 0 - 0 0\n"
+  "4 2 0 0 0 0\n"
+  "3 5 0 0 0 0\n"
+  "0 6 0 - 0 0\n"
+  "6 2 0 0 0 0\n"
+  "contextes 1\n"
+  "4 3 1\n"
+  "chaine 9\n"
+  "3 1 1 4 1 7 1\n"
+  "1 2 1\n"
+  "1 3 1\n"
+  "2 0 2 6 1\n"
+  "1 5 1\n"
+  "1 3 1\n"
+  "1 0 1\n"
+  "1 8 1\n"
+  "1 3 1\n"
+  "chaine_repli 7\n"
+  "3 1 1 4 1 6 1\n"
+  "1 2 1\n"
+  "1 3 3\n"
+  "2 0 2 5 1\n"
+  "1 2 1\n"
+  "1 0 1\n"
+  "1 2 1\n"
+  "ponctuation 12\n"
+  "0\n0\n0\n0\n0\n0\n0\n0\n"
+  "2 0 1 2 1\n"
+  "0\n"
+  "1 0 1\n"
+  "0\n"
   "fin\n";
 
 /* Marques de dialogue des phrases generees, en UTF-8. */
@@ -101,7 +229,7 @@ static modele_t *apprendre_avec(const char *contenu,
 /** Apprend un modele sur un corpus d'un seul fichier. */
 static modele_t *apprendre_texte(const char *contenu, unsigned int ordre, unsigned int graine)
 {
-  modele_options_t options = { 1u, false, false, false };
+  modele_options_t options = { 1u, false, false, false, 0u };
 
   options.ordre = ordre;
   return apprendre_avec(contenu, &options, graine);
@@ -167,12 +295,26 @@ static void verifier_refus_3(const char *ancien, const char *nouveau)
   verifier_refus_dans(MODELE_VALIDE_3, ancien, nouveau);
 }
 
+/** Verifie qu'une version modifiee du modele d'ordre 4 (repli a l'ordre 3) est refusee. */
+static void verifier_refus_4_3(const char *ancien, const char *nouveau)
+{
+  verifier_refus_dans(MODELE_VALIDE_4_3, ancien, nouveau);
+}
+
+/** Verifie qu'une version modifiee du modele des homographes (ordre 2,
+    repli a l'ordre 1, un contexte) est refusee. */
+static void verifier_refus_repli(const char *ancien, const char *nouveau)
+{
+  verifier_refus_dans(MODELE_VALIDE_REPLI, ancien, nouveau);
+}
+
 /**
  * Verifie la forme d'une phrase generee et que tous ses mots sont du
- * modele : guillemets bien formes ; au debut, un tiret de dialogue et un
- * guillemet ouvrant eventuels, puis le premier mot, avec une majuscule ; a
- * la fin, une ponctuation finale (facultative si sans_ponctuation) suivie
- * d'un guillemet fermant eventuel.
+ * modele : guillemets et parentheses bien formes ; au debut, un tiret de
+ * dialogue, une parenthese et un guillemet ouvrants eventuels, puis le
+ * premier mot, avec une majuscule ; a la fin, une ponctuation finale
+ * (facultative si sans_ponctuation) suivie de marques fermantes
+ * eventuelles.
  */
 static void verifier_phrase_lue(const modele_t *m, const char *phrase, bool sans_ponctuation)
 {
@@ -180,37 +322,16 @@ static void verifier_phrase_lue(const modele_t *m, const char *phrase, bool sans
   char *chemin = chemin_dans(repertoire, "phrase.txt");
   iterateur_mots_t *it;
   const char *mot;
-  const char *debut = phrase;
-  const char *c;
-  size_t fin = strlen(phrase);
-  bool ouvert = false;
+  const char *debut = apres_marques_ouvrantes(phrase);
   bool fin_phrase;
   unsigned int nb_mots = 0u;
 
-  assert(fin >= 1u && strchr(phrase, '\n') == NULL);
-  /* guillemets : jamais deux ouverts, tout guillemet ouvert est ferme */
-  for (c = phrase; *c != '\0'; c++) {
-    if (strncmp(c, GO, 2u) == 0) {
-      assert(!ouvert);
-      ouvert = true;
-    } else if (strncmp(c, GF, 2u) == 0) {
-      assert(ouvert);
-      ouvert = false;
-    }
+  assert(strlen(phrase) >= 1u && strchr(phrase, '\n') == NULL);
+  if (!marques_bien_formees(phrase) || !(sans_ponctuation || termine_par_ponctuation(phrase))) {
+    fprintf(stderr, "\nphrase mal formee : \"%s\"\n", phrase);
   }
-  assert(!ouvert);
-  if (strncmp(debut, TIRET, 4u) == 0) {
-    debut += 4;
-  }
-  if (strncmp(debut, GO, 2u) == 0) {
-    debut += 2;
-  }
-  if (fin >= 2u && strncmp(phrase + fin - 2u, GF, 2u) == 0) {
-    fin -= 2u;
-  }
-  assert(fin >= 1u);
-  assert(phrase[fin - 1u] == '.' || phrase[fin - 1u] == '!'
-         || phrase[fin - 1u] == '?' || sans_ponctuation);
+  assert(marques_bien_formees(phrase));
+  assert(sans_ponctuation || termine_par_ponctuation(phrase));
   ecrire_fichier(chemin, phrase);
   it = iterateur_mots_creer(chemin);
   assert(it != NULL);
@@ -347,6 +468,24 @@ static const char CORPUS_DIALOGUES[] =
   "Il dit: \xC2\xABViens ici!\xC2\xBB Puis il sortit.\n"
   "Elle cria: \"Au secours!\"\n";
 
+/** Corpus de ponctuation interne : '!', '?', "..." et point d'abreviation
+    suivis d'un mot en minuscules, parentheses. */
+static const char CORPUS_PONCTUATION_INTERNE[] =
+  "Ah! dit-il (en riant). \xC2\xAB" "D'o\xC3\xB9 viens-tu?\xC2\xBB me "
+  "cria-t-elle. Il attendit... puis il partit. Il dit (etc.) et partit.";
+
+/** Phrases que les chaines d'ordre 2 ou plus doivent en tirer : le signe
+    d'une ponctuation interne precede les marques fermantes, une marque dont
+    le contenu commence par une minuscule se ferme avant la ponctuation
+    finale. */
+static const char *const PHRASES_PONCTUATION_INTERNE[] = {
+  "Ah! dit-il (en riant).",
+  GO "D'o\xC3\xB9 viens-tu?" GF " me cria-t-elle.",
+  "Il attendit... puis il partit.",
+  "Il dit (etc.) et partit.",
+  NULL
+};
+
 /** Phrases que les chaines d'ordre 2 ou plus doivent en tirer. */
 static const char *const PHRASES_DIALOGUES[] = {
   TIRET "Oui, dit-il.",
@@ -444,6 +583,167 @@ static void test_dialogues(void)
   verifier_phrase(m, phrase);
   free(phrase);
   modele_detruire(&m);
+}
+
+static void test_ponctuation_interne(void)
+{
+  modele_t *m;
+  char *phrase;
+  unsigned int ordre;
+  unsigned int i;
+
+  for (ordre = 2u; ordre <= 4u; ordre++) {
+    m = apprendre_texte(CORPUS_PONCTUATION_INTERNE, ordre, 9u);
+    verifier_phrases_possibles(m, HACHAGE_ABSENT, PHRASES_PONCTUATION_INTERNE, 120u);
+    modele_detruire(&m);
+  }
+  /* ordre 1 : les phrases melangent les passages, parentheses et
+     guillemets restent bien formes */
+  m = apprendre_texte(CORPUS_PONCTUATION_INTERNE, 1u, 9u);
+  for (i = 0u; i < 500u; i++) {
+    phrase = modele_generer_phrase(m);
+    verifier_phrase(m, phrase);
+    free(phrase);
+  }
+  modele_detruire(&m);
+  /* passage entre parentheses qui commence par une majuscule : c'est une
+     phrase citee, sa ponctuation finale reste a l'interieur */
+  m = apprendre_texte("Il sourit (Vraiment!)", 2u, 9u);
+  phrase = modele_generer_phrase(m);
+  assert(strcmp(phrase, "Il sourit (Vraiment!)") == 0);
+  free(phrase);
+  modele_detruire(&m);
+}
+
+static void test_homographes(void)
+{
+  /* "la" apres "Elle est", "la" avec accent grave apres "Qui est" et "Il
+     est" : le contexte des deux mots precedents choisit l'accent, a tout
+     ordre (a l'ordre 1, le mot suivant ne depend que de "est") */
+  const char *const attendues[] = {
+    "Qui est l\xC3\xA0.", "Qui est l\xC3\xA0?", "Qui est l\xC3\xA0 reine.",
+    "Elle est la.", "Elle est la?", "Elle est la reine.",
+    "Il est l\xC3\xA0.", "Il est l\xC3\xA0?", "Il est l\xC3\xA0 reine.", NULL
+  };
+  const char *const originales[] = {
+    "Qui est l\xC3\xA0.", "Qui est l\xC3\xA0?", "Elle est la reine.",
+    "Il est l\xC3\xA0.", "Il est l\xC3\xA0?", NULL
+  };
+  modele_t *m;
+  unsigned int ordre;
+
+  for (ordre = 1u; ordre <= 3u; ordre++) {
+    m = apprendre_texte(CORPUS_HOMOGRAPHES, ordre, 7u);
+    verifier_phrases_possibles(m, HACHAGE_ABSENT, (ordre <= 2u) ? attendues : originales, 900u);
+    modele_detruire(&m);
+  }
+}
+
+static void test_repli(void)
+{
+  const char *const corpus = "Le chat de la voisine dort. "
+                             "Le chien de la maison mange.";
+  const char *const melangees[] = {
+    "Le chat de la voisine dort.", "Le chien de la maison mange.",
+    "Le chat de la maison mange.", "Le chien de la voisine dort.", NULL
+  };
+  const char *const repas[] = {
+    "Il mange une pomme.", "Il mange une poire.", "Elle voit une maison.",
+    "Elle voit une pomme.", "Elle voit une poire.", NULL
+  };
+  const char *const animaux_originaux[] = {
+    "Le chat dort bien.", "Un chat mange vite.", NULL
+  };
+  const char *const animaux_melanges[] = {
+    "Le chat dort bien.", "Un chat mange vite.", "Le chat mange vite.",
+    "Un chat dort bien.", NULL
+  };
+  const char *const depuis_un[] = {
+    "Un chat mange vite.", "Un chat dort bien.", NULL
+  };
+  const char *const animaux = "Le chat dort bien. Un chat mange vite.";
+  modele_options_t options = { 3u, false, false, false, 2u };
+  modele_t *m;
+
+  /* ordre 3 : "chat de la" n'a qu'un successeur ; avec un repli a l'ordre
+     2, le mot suivant est tire selon "de la" (sans repli, cf.
+     test_ordre_superieur_moins_de_melanges : les phrases du corpus) */
+  m = apprendre_avec(corpus, &options, 4u);
+  verifier_phrases_possibles(m, HACHAGE_ABSENT, melangees, 200u);
+  modele_detruire(&m);
+  /* le repli n'a lieu que si le contexte n'a qu'un successeur : "mange
+     une" en a deux (pomme, poire), jamais "maison" ; "voit une" n'en a
+     qu'un, tous les successeurs de "une" sont possibles */
+  options.ordre = 2u;
+  options.ordre_repli = 1u;
+  m = apprendre_avec("Il mange une pomme. Il mange une poire. "
+                     "Elle voit une maison.", &options, 5u);
+  verifier_phrases_possibles(m, HACHAGE_ABSENT, repas, 400u);
+  modele_detruire(&m);
+  /* ordre 3 : repli a l'ordre 2 sans effet ("le chat" et "un chat" n'ont
+     qu'un successeur) ; a l'ordre 1, "chat" en a deux, puis le contexte
+     "le chat mange", absent du corpus, impose un nouveau repli */
+  options.ordre = 3u;
+  options.ordre_repli = 2u;
+  m = apprendre_avec(animaux, &options, 6u);
+  verifier_phrases_possibles(m, HACHAGE_ABSENT, animaux_originaux, 100u);
+  modele_detruire(&m);
+  options.ordre_repli = 1u;
+  m = apprendre_avec(animaux, &options, 6u);
+  verifier_phrases_possibles(m, HACHAGE_ABSENT, animaux_melanges, 200u);
+  /* depuis un mot : meme regle */
+  verifier_phrases_possibles(m, modele_mot(m, "un"), depuis_un, 100u);
+  modele_detruire(&m);
+}
+
+/**
+ * Pour chaque ordre et chaque ordre de repli : phrases bien formees, de
+ * tout debut et depuis chaque mot ; la chaine de repli est celle d'un
+ * modele de cet ordre appris sur le meme corpus.
+ */
+static void test_repli_tous_les_ordres(void)
+{
+  char *corpus = malloc(sizeof(CORPUS_LISIBLE) + sizeof(CORPUS_DIALOGUES)
+                        + sizeof(CORPUS_PONCTUATION_INTERNE)
+                        + sizeof(CORPUS_HOMOGRAPHES) + 4u);
+  modele_options_t options = { 1u, false, false, false, 0u };
+  modele_t *m;
+  modele_t *reference;
+  char *phrase;
+  unsigned int i;
+
+  assert(corpus != NULL);
+  strcpy(corpus, CORPUS_LISIBLE);
+  strcat(corpus, "\n");
+  strcat(corpus, CORPUS_DIALOGUES);
+  strcat(corpus, CORPUS_PONCTUATION_INTERNE);
+  strcat(corpus, "\n");
+  strcat(corpus, CORPUS_HOMOGRAPHES);
+  for (options.ordre = 2u; options.ordre <= MODELE_ORDRE_MAX; options.ordre++) {
+    for (options.ordre_repli = 1u; options.ordre_repli < options.ordre; options.ordre_repli++) {
+      m = apprendre_avec(corpus, &options, options.ordre);
+      reference = apprendre_texte(corpus, options.ordre_repli, 1u);
+      assert(modele_ordre_repli(m) == options.ordre_repli);
+      verifier_chaines_egales(modele_repli(m), modele_chaine(reference));
+      assert((modele_etats_repli(m) == NULL) == (options.ordre_repli < 3u));
+      if (modele_etats_repli(m) != NULL) {
+        assert(hachage_nuplets_nb(modele_etats_repli(m)) == hachage_nuplets_nb(modele_etats(reference)));
+      }
+      modele_detruire(&reference);
+      for (i = 0u; i < 40u; i++) {
+        phrase = modele_generer_phrase(m);
+        verifier_phrase(m, phrase);
+        free(phrase);
+      }
+      for (i = 1u; i <= modele_nb_mots(m); i++) {
+        phrase = modele_generer_phrase_depuis(m, i);
+        verifier_phrase(m, phrase);
+        free(phrase);
+      }
+      modele_detruire(&m);
+    }
+  }
+  free(corpus);
 }
 
 static void test_generation_ordre_1(void)
@@ -545,6 +845,35 @@ static void test_accesseurs(void)
   assert(markov_nb_etats(modele_chaine(m)) == hachage_nuplets_nb(modele_etats(m)));
   /* (0,0,0) (0,0,le) (0,le,chat) (le,chat,dort) (0,le,chien) (le,chien,dort) */
   assert(hachage_nuplets_nb(modele_etats(m)) == 6u);
+  assert(modele_ordre_repli(m) == 0u);
+  assert(modele_repli(m) == NULL && modele_etats_repli(m) == NULL);
+  modele_detruire(&m);
+}
+
+static void test_accesseurs_repli(void)
+{
+  modele_options_t options = { 3u, false, false, false, 2u };
+  modele_t *m = apprendre_avec("Le chat dort. Le chien dort.", &options, 1u);
+
+  /* repli a l'ordre 2 : un etat par bigramme */
+  assert(modele_ordre(m) == 3u && modele_ordre_repli(m) == 2u);
+  assert(modele_repli(m) != NULL && modele_etats_repli(m) == NULL);
+  assert(markov_nb_etats(modele_repli(m)) == hachage_paires_nb(modele_bigrammes(m)));
+  modele_detruire(&m);
+  /* repli a l'ordre 1 : un etat par mot */
+  options.ordre_repli = 1u;
+  m = apprendre_avec("Le chat dort. Le chien dort.", &options, 1u);
+  assert(markov_nb_etats(modele_repli(m)) == modele_nb_mots(m) + 1u);
+  modele_detruire(&m);
+  /* ordre 5, repli a l'ordre 3 : les etats de repli sont des triplets */
+  options.ordre = 5u;
+  options.ordre_repli = 3u;
+  m = apprendre_avec("Le chat dort. Le chien dort.", &options, 1u);
+  assert(modele_etats_repli(m) != NULL);
+  assert(hachage_nuplets_taille(modele_etats_repli(m)) == 3u);
+  assert(hachage_nuplets_nb(modele_etats_repli(m)) == 6u);
+  assert(markov_nb_etats(modele_repli(m)) == 6u);
+  assert(hachage_nuplets_taille(modele_etats(m)) == 5u);
   modele_detruire(&m);
 }
 
@@ -669,7 +998,7 @@ static void test_phrase_par_ligne(void)
     "Un vers sans fin", "Un autre vers", "Un autre vers!",
     "Et un dernier vers", "Et un dernier vers!", NULL
   };
-  modele_options_t options = { 2u, false, true, false };
+  modele_options_t options = { 2u, false, true, false, 0u };
   modele_t *m = apprendre_avec(poeme, &options, 3u);
   char *phrase;
   unsigned int i;
@@ -697,7 +1026,7 @@ static void test_corpus_de_plusieurs_chemins(void)
   char *ailleurs = creer_repertoire_temporaire();
   char *fichier = chemin_dans(ailleurs, "lettre.txt");
   const char *chemins[2];
-  modele_options_t options = { 2u, false, false, false };
+  modele_options_t options = { 2u, false, false, false, 0u };
   repertoire_bilan_t bilan;
   modele_t *m;
 
@@ -733,7 +1062,7 @@ static void test_filtre_de_langue(void)
     "water for many years. It was cold and the wind was strong.\n";
   char *repertoire = creer_repertoire_temporaire();
   const char *chemin = repertoire;
-  modele_options_t options = { 2u, false, false, true };
+  modele_options_t options = { 2u, false, false, true, 0u };
   repertoire_bilan_t bilan;
   modele_t *m;
   char *phrase;
@@ -769,11 +1098,18 @@ static void test_filtre_de_langue(void)
 /*                         Sauvegarde et chargement                         */
 /* ======================================================================== */
 
-static void test_format_de_sauvegarde(void)
+/**
+ * Apprend un corpus et verifie le fichier sauvegarde (attendu), puis charge
+ * ce texte ecrit a la main et verifie la premiere phrase generee (graine 1
+ * dans les deux cas).
+ */
+static void verifier_format(const char *corpus,
+                            const modele_options_t *options,
+                            const char *attendu, const char *premiere_phrase)
 {
   char *repertoire = creer_repertoire_temporaire();
   char *chemin = chemin_dans(repertoire, "modele.txt");
-  modele_t *m = apprendre_texte("Le chat dort.", 1u, 1u);
+  modele_t *m = apprendre_avec(corpus, options, 1u);
   char *contenu;
   char *phrase;
   int erreur = 0;
@@ -781,47 +1117,85 @@ static void test_format_de_sauvegarde(void)
   assert(modele_sauvegarder(m, chemin));
   contenu = lire_fichier(chemin);
   assert(contenu != NULL);
-  if (strcmp(contenu, MODELE_VALIDE) != 0) {
+  if (strcmp(contenu, attendu) != 0) {
     fprintf(stderr, "\nfichier obtenu :\n%s", contenu);
   }
-  assert(strcmp(contenu, MODELE_VALIDE) == 0);
+  assert(strcmp(contenu, attendu) == 0);
   free(contenu);
   modele_detruire(&m);
-  /* un fichier ecrit a la main au bon format est accepte */
-  m = charger_texte(MODELE_VALIDE, strlen(MODELE_VALIDE), &erreur);
+  m = charger_texte(attendu, strlen(attendu), &erreur);
   assert(m != NULL && modele_peut_generer(m));
+  assert(modele_ordre(m) == options->ordre);
+  assert(modele_ordre_repli(m) == options->ordre_repli);
   phrase = modele_generer_phrase(m);
-  assert(strcmp(phrase, "Le chat dort.") == 0);
-  free(phrase);
-  modele_detruire(&m);
-  /* ordre 3 : la section des etats s'ajoute */
-  m = apprendre_texte("Le chat dort.", 3u, 1u);
-  assert(modele_sauvegarder(m, chemin));
-  contenu = lire_fichier(chemin);
-  assert(contenu != NULL);
-  if (strcmp(contenu, MODELE_VALIDE_3) != 0) {
-    fprintf(stderr, "\nfichier obtenu :\n%s", contenu);
+  if (strcmp(phrase, premiere_phrase) != 0) {
+    fprintf(stderr, "\nphrase obtenue : \"%s\"\n", phrase);
   }
-  assert(strcmp(contenu, MODELE_VALIDE_3) == 0);
-  free(contenu);
-  modele_detruire(&m);
-  m = charger_texte(MODELE_VALIDE_3, strlen(MODELE_VALIDE_3), &erreur);
-  assert(m != NULL && modele_ordre(m) == 3u);
-  phrase = modele_generer_phrase(m);
-  assert(strcmp(phrase, "Le chat dort.") == 0);
+  assert(strcmp(phrase, premiere_phrase) == 0);
   free(phrase);
   modele_detruire(&m);
   free(chemin);
   detruire_repertoire_temporaire(repertoire);
 }
 
-/** Apprend, sauvegarde, recharge et compare (ordre donne). */
-static void verifier_aller_retour(unsigned int ordre)
+static void test_format_de_sauvegarde(void)
+{
+  modele_options_t options = { 1u, false, false, false, 0u };
+
+  verifier_format("Le chat dort.", &options, MODELE_VALIDE, "Le chat dort.");
+  /* ordre 3 : la section des etats s'ajoute */
+  options.ordre = 3u;
+  verifier_format("Le chat dort.", &options, MODELE_VALIDE_3, "Le chat dort.");
+  /* ordre 4, repli a l'ordre 3 : etats et chaine de repli */
+  options.ordre = 4u;
+  options.ordre_repli = 3u;
+  verifier_format("Le chat dort.", &options, MODELE_VALIDE_4_3, "Le chat dort.");
+  /* ordre 2, repli a l'ordre 1 (un etat par mot), un contexte */
+  options.ordre = 2u;
+  options.ordre_repli = 1u;
+  verifier_format(CORPUS_HOMOGRAPHES, &options, MODELE_VALIDE_REPLI, "Il est l\xC3\xA0?");
+}
+
+static void test_format_version_2(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *chemin = chemin_dans(repertoire, "modele.txt");
+  modele_t *m;
+  char *phrase;
+  char *contenu;
+  int erreur = 0;
+
+  /* un modele de la version 2 (ni repli ni contextes) reste lisible ; il
+     est resauvegarde au format courant */
+  m = charger_texte(MODELE_VERSION_2, strlen(MODELE_VERSION_2), &erreur);
+  assert(m != NULL && modele_ordre(m) == 1u && modele_ordre_repli(m) == 0u);
+  phrase = modele_generer_phrase(m);
+  assert(strcmp(phrase, "Le chat dort.") == 0);
+  free(phrase);
+  assert(modele_sauvegarder(m, chemin));
+  contenu = lire_fichier(chemin);
+  assert(contenu != NULL && strcmp(contenu, MODELE_VALIDE) == 0);
+  free(contenu);
+  modele_detruire(&m);
+  /* la version 2 n'a ni ligne repli ni section contextes, toutes deux
+     obligatoires dans la version 3 */
+  verifier_refus_dans(MODELE_VERSION_2, "ordre 1\n", "ordre 1\nrepli 0\n");
+  verifier_refus_dans(MODELE_VERSION_2, "chaine 4", "contextes 0\nchaine 4");
+  verifier_refus("repli 0\n", "");
+  verifier_refus("contextes 0\n", "");
+  free(chemin);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+/** Apprend, sauvegarde, recharge et compare (ordre et ordre de repli donnes). */
+static void verifier_aller_retour(unsigned int ordre, unsigned int ordre_repli)
 {
   char *repertoire = creer_repertoire_temporaire();
   char *corpus = chemin_dans(repertoire, "corpus");
   char *chemin = chemin_dans(repertoire, "modele.txt");
   char *chemin_bis = chemin_dans(repertoire, "modele_bis.txt");
+  const char *chemins[1];
+  modele_options_t options = { 1u, false, false, false, 0u };
   modele_t *appris;
   modele_t *charge;
   const lexique_t *la;
@@ -831,6 +1205,10 @@ static void verifier_aller_retour(unsigned int ordre)
   char *contenu;
   char *contenu_bis;
   unsigned int i;
+  unsigned int variante;
+  unsigned int mot_avant;
+  unsigned int bigramme;
+  unsigned int nb_exceptions = 0u;
 
   assert(mkdir(corpus, 0700) == 0);
   creer_fichier_dans(corpus, "a.txt", CORPUS_LISIBLE);
@@ -838,7 +1216,12 @@ static void verifier_aller_retour(unsigned int ordre)
                      "plage. L'\xE9t\xE9, c'est la plage !");  /* Latin-1 */
   creer_fichier_dans(corpus, "c.txt", "etait il a dit la plage\n\nFIN");
   creer_fichier_dans(corpus, "d.txt", CORPUS_DIALOGUES);
-  appris = modele_apprendre(corpus, 77u, ordre, false);
+  creer_fichier_dans(corpus, "e.txt", CORPUS_HOMOGRAPHES);
+  creer_fichier_dans(corpus, "f.txt", CORPUS_PONCTUATION_INTERNE);
+  chemins[0] = corpus;
+  options.ordre = ordre;
+  options.ordre_repli = ordre_repli;
+  appris = modele_apprendre_corpus(chemins, 1u, 77u, &options, NULL);
   assert(appris != NULL);
   assert(modele_sauvegarder(appris, chemin));
   charge = modele_charger(chemin, 77u);
@@ -849,8 +1232,7 @@ static void verifier_aller_retour(unsigned int ordre)
   for (i = 1u; i <= modele_nb_mots(appris); i++) {
     assert(strcmp(hachage_mot(modele_mots(charge), i), hachage_mot(modele_mots(appris), i)) == 0);
   }
-  assert(hachage_paires_nb(modele_bigrammes(charge))
-         == hachage_paires_nb(modele_bigrammes(appris)));
+  assert(hachage_paires_nb(modele_bigrammes(charge)) == hachage_paires_nb(modele_bigrammes(appris)));
   verifier_chaines_egales(modele_chaine(appris), modele_chaine(charge));
   verifier_chaines_egales(modele_ponctuation(appris), modele_ponctuation(charge));
   la = modele_lexique(appris);
@@ -863,7 +1245,26 @@ static void verifier_aller_retour(unsigned int ordre)
   }
   assert((modele_etats(appris) == NULL) == (ordre < 3u));
   assert((modele_etats(charge) == NULL) == (ordre < 3u));
-  /* meme graine : exactement les memes phrases, de tout debut et depuis chaque mot */
+  /* meme repli */
+  assert(modele_ordre_repli(charge) == ordre_repli);
+  assert((modele_repli(charge) == NULL) == (ordre_repli == 0u));
+  assert((modele_etats_repli(charge) == NULL) == (ordre_repli < 3u));
+  if (ordre_repli > 0u) {
+    verifier_chaines_egales(modele_repli(appris), modele_repli(charge));
+  }
+  /* memes contextes : les exceptions du modele appris, seules
+     sauvegardees */
+  for (i = 0u; i < lexique_nb_contextes(la); i++) {
+    variante = lexique_contexte(la, i, &mot_avant, &bigramme);
+    if (variante != LEXIQUE_AUCUNE) {
+      nb_exceptions++;
+      assert(lexique_variante_contexte(lc, mot_avant, bigramme) == variante);
+    }
+  }
+  assert(nb_exceptions > 0u);
+  assert(lexique_nb_contextes(lc) == nb_exceptions);
+  /* meme graine : exactement les memes phrases, de tout debut et depuis
+     chaque mot */
   for (i = 0u; i < 300u; i++) {
     pa = modele_generer_phrase(appris);
     pc = modele_generer_phrase(charge);
@@ -898,9 +1299,12 @@ static void verifier_aller_retour(unsigned int ordre)
 static void test_aller_retour_tous_les_ordres(void)
 {
   unsigned int ordre;
+  unsigned int ordre_repli;
 
   for (ordre = 1u; ordre <= MODELE_ORDRE_MAX; ordre++) {
-    verifier_aller_retour(ordre);
+    for (ordre_repli = 0u; ordre_repli < ordre; ordre_repli++) {
+      verifier_aller_retour(ordre, ordre_repli);
+    }
   }
 }
 
@@ -964,20 +1368,28 @@ static void verifier_accepte(const char *modele, const char *ancien,
 static void test_charger_fichiers_invalides(void)
 {
   const char *const mot_sans_etat =
-    "modele-markov 2\nordre 3\nmots 5\n- - 0 0\nle 0 0 1 le\n"
+    "modele-markov 3\nordre 3\nrepli 0\nmots 5\n- - 0 0\nle 0 0 1 le\n"
     "chat 0 0 1 chat\ndort 0 0 1 dort\nchien 0 0 1 chien\nbigrammes 4\n"
-    "0 0 - - 0 0\n0 1 - - 0 0\n1 2 - 0 0 0\n2 3 - 0 0 0\netats 4\n0 0 0\n"
+    "0 0 - - 0 0\n0 1 - - 0 0\n1 2 - 0 0 0\n2 3 - 0 0 0\ncontextes 0\n"
+    "etats 4\n0 0 0\n"
     "0 0 1\n0 1 2\n1 2 3\nchaine 4\n1 1 1\n1 2 1\n1 3 1\n1 0 1\n"
     "ponctuation 10\n0\n0\n0\n0\n0\n0\n0\n0\n1 0 1\n0\nfin\n";
   char *crlf;
   char *avec_nul;
+  char *modifie;
   size_t i;
   size_t j;
   int erreur = 0;
   char *repertoire;
 
-  /* en-tete (l'ancien format 1 est refuse), ordre, nombres */
-  verifier_refus("modele-markov 2", "modele-markov 1");
+  /* en-tete (l'ancien format 1 est refuse), ordre, repli, nombres */
+  verifier_refus("modele-markov 3", "modele-markov 1");
+  verifier_refus("modele-markov 3", "modele-markov 4");
+  verifier_refus("repli 0", "repli 1");                 /* pas inferieur */
+  verifier_refus("repli 0", "repli");
+  verifier_refus("repli 0", "repli 0 0");
+  verifier_refus("contextes 0", "contextes 1");         /* ligne absente */
+  verifier_refus("contextes 0", "contextes");
   verifier_refus("ordre 1", "ordre 0");
   verifier_refus("ordre 1", "ordre 9");
   verifier_refus("ordre 1", "ordre 3");                      /* sans etats */
@@ -1006,11 +1418,11 @@ static void test_charger_fichiers_invalides(void)
   verifier_refus("0 0 - - 0 0", "1 1 - - 0 0");
   verifier_refus("2 3 - 0 0 0", "2 0 - 0 0 0");
   verifier_refus("2 3 - 0 0 0", "1 2 - 0 0 0");              /* doublon */
-  verifier_refus("1 2 - 0 0 0", "1 2 - 0 7 0");              /* liaison */
+  verifier_refus("1 2 - 0 0 0", "1 2 - 0 10 0");             /* liaison */
   verifier_refus("1 2 - 0 0 0", "1 2 1 0 0 0");              /* variante */
   verifier_refus("1 2 - 0 0 0", "1 7 - 0 0 0");
   verifier_refus("1 2 - 0 0 0", "1 2 - 0 0");                /* sans marques */
-  verifier_refus("1 2 - 0 0 0", "1 2 - 0 0 8");              /* marques */
+  verifier_refus("1 2 - 0 0 0", "1 2 - 0 0 32");             /* marques */
   verifier_refus("1 2 - 0 0 0", "1 2 - 0 1 2");              /* ' et tiret */
   verifier_refus("1 2 - 0 0 0", "1 2 - 0 2 4");              /* - et << */
   verifier_refus("1 2 - 0 0 0", "1 2 - 0 0 0 0");
@@ -1036,7 +1448,30 @@ static void test_charger_fichiers_invalides(void)
   verifier_accepte(MODELE_VALIDE, "0 1 - - 0 0", "0 1 - - 0 6",
                    TIRET GO "Le chat dort." GF);
   verifier_accepte(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 4 7",
-                   "Le, " TIRET GO "chat dort." GF);
+                   "Le, " TIRET GO "chat dort" GF ".");
+  verifier_accepte(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 7 0",
+                   "Le! chat dort.");
+  verifier_accepte(MODELE_VALIDE, "0 1 - - 0 0", "0 1 - - 0 8",
+                   "(Le chat dort.)");
+  verifier_accepte(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 0 8",
+                   "Le (chat dort).");
+  verifier_accepte(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 9 12",
+                   "Le... (" GO "chat dort" GF ").");
+  verifier_accepte(MODELE_VALIDE, "2 3 - 0 0 0", "2 3 - 0 8 17",
+                   "Le chat? dort.");             /* rien a fermer */
+  /* signe de la ponctuation interne avant les marques fermantes, virgule
+     apres */
+  modifie = remplacer(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 0 8");
+  verifier_accepte(modifie, "2 3 - 0 0 0", "2 3 - 0 7 16", "Le (chat!) dort.");
+  verifier_accepte(modifie, "2 3 - 0 0 0", "2 3 - 0 4 16", "Le (chat), dort.");
+  verifier_accepte(modifie, "2 3 - 0 0 0", "2 3 - 0 3 16", "Le (chat.) dort.");
+  free(modifie);
+  modifie = remplacer(MODELE_VALIDE, "1 2 - 0 0 0", "1 2 - 0 0 12");
+  verifier_accepte(modifie, "2 3 - 0 0 0", "2 3 - 0 8 1",
+                   "Le (" GO "chat?" GF " dort).");
+  verifier_accepte(modifie, "2 3 - 0 0 0", "2 3 - 0 8 16",
+                   "Le (" GO "chat?" GF ") dort.");
+  free(modifie);
   /* etats (ordre 3) */
   verifier_refus_3("etats 4", "etats 0");
   verifier_refus_3("etats 4", "etats 5");
@@ -1050,6 +1485,59 @@ static void test_charger_fichiers_invalides(void)
   verifier_refus_3("1 2 3\n", "2 2 3\n");      /* fenetre incoherente */
   verifier_refus_3("2 3 - 0 0 0", "1 3 - 0 0 0");            /* paire */
   verifier_refus_3("ordre 3", "ordre 4");
+  /* contextes de deux mots */
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n7 3 1");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 9 1");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 3 2");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 3 0");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 1 0");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 0 0");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n5 3 1");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 3");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 3 1 1");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 1\n4 3 -");
+  verifier_refus_repli("contextes 1\n4 3 1", "contextes 2\n4 3 1\n4 3 1");
+  verifier_refus_repli("contextes 1", "contextes 2");
+  /* bigramme (est, la) sans variante propre : celle du mot (accent
+     grave) ; le contexte doit en differer */
+  modifie = remplacer(MODELE_VALIDE_REPLI, "2 3 0 0 0 0", "2 3 - 0 0 0");
+  verifier_accepte(modifie, "fin", "fin", "Il est l\xC3\xA0?");
+  verifier_refus_dans(modifie, "contextes 1\n4 3 1", "contextes 1\n4 3 0");
+  free(modifie);
+  /* "qui est la" sans accent : autre exception, acceptee */
+  verifier_accepte(MODELE_VALIDE_REPLI, "contextes 1\n4 3 1",
+                   "contextes 1\n6 3 1", "Il est la?");
+  /* chaine de repli */
+  verifier_refus_repli("repli 1", "repli 2");
+  verifier_refus_repli("repli 1", "repli 0");
+  verifier_refus_repli("chaine_repli 7", "chaine_repli 9");
+  verifier_refus_repli("chaine_repli 7", "chaine_repli 6");
+  verifier_refus_repli("chaine_repli 7\n3 1 1 4 1 6 1", "chaine_repli 7\n0");         /* pas de debut */
+  verifier_refus_repli("chaine_repli 7\n3 1 1 4 1 6 1",
+                       "chaine_repli 7\n4 0 1 1 1 4 1 6 1");  /* vide */
+  verifier_refus_repli("1 2 1\n1 3 3\n", "1 2 1\n1 4 3\n");  /* est elle */
+  verifier_refus_repli("1 2 1\n1 3 3\n", "1 2 1\n0\n");    /* sans voisin */
+  verifier_refus_repli("2 0 2 5 1\n", "2 0 2 4 1\n");      /* la elle */
+  verifier_refus_repli("1 0 1\n1 2 1\nponctuation", "1 0 1\nponctuation");
+  /* etats de repli (ordre 3) */
+  verifier_refus_4_3("repli 3", "repli 4");
+  verifier_refus_4_3("etats_repli 4", "etats_repli 0");
+  verifier_refus_4_3("etats_repli 4", "etats_repli 5");
+  verifier_refus_4_3("etats_repli 4\n0 0 0\n0 0 1", "etats_repli 4\n0 0 1\n0 0 0");
+  verifier_refus_4_3("0 1 2\n1 2 3\nchaine_repli", "0 1 2\n2 2 3\nchaine_repli");     /* incoherent */
+  verifier_refus_4_3("0 1 2\n1 2 3\nchaine_repli", "0 1 2\n1 2 3 3\nchaine_repli");
+  verifier_refus_4_3("0 1 2\n1 2 3\nchaine_repli", "0 1 2\n0 1 2\nchaine_repli");     /* doublon */
+  verifier_refus_4_3("chaine_repli 4", "chaine_repli 3");
+  /* les trois derniers mots de l'etat (le, chat, dort) doivent former un
+     etat de repli : la chaine de repli de "le chat" seul est refusee */
+  modifie = remplacer(MODELE_VALIDE_4_3,
+                      "etats_repli 4\n0 0 0\n0 0 1\n0 1 2\n1 2 3\n"
+                      "chaine_repli 4\n1 1 1\n1 2 1\n1 3 1\n1 0 1\n",
+                      "etats_repli 3\n0 0 0\n0 0 1\n0 1 2\n"
+                      "chaine_repli 3\n1 1 1\n1 2 1\n1 0 1\n");
+  verifier_refus_dans(modifie, "0\n0\n0\n0\n0\n0\n0\n0\n1 0 1\nfin",
+                      "0\n0\n0\n0\n0\n0\n0\n1 0 1\n1 0 1\nfin");
+  free(modifie);
   /* un mot qui ne termine aucun etat : on ne pourrait pas partir de lui */
   assert(charger_texte(mot_sans_etat, strlen(mot_sans_etat), &erreur) == NULL
          && erreur == EINVAL);
@@ -1107,10 +1595,18 @@ static void violation_ordre_nul(void)
 
 static void violation_corpus_sans_chemin(void)
 {
-  modele_options_t options = { 1u, false, false, false };
+  modele_options_t options = { 1u, false, false, false, 0u };
   const char *chemins[1] = { "/tmp" };
 
   modele_apprendre_corpus(chemins, 0u, 1u, &options, NULL);
+}
+
+static void violation_repli_trop_grand(void)
+{
+  modele_options_t options = { 2u, false, false, false, 2u };
+  const char *chemins[1] = { "/tmp" };
+
+  modele_apprendre_corpus(chemins, 1u, 1u, &options, NULL);
 }
 
 static void violation_options_nulles(void)
@@ -1182,6 +1678,7 @@ static void test_contrats(void)
   assert(viole_contrat(violation_ordre_nul));
   assert(viole_contrat(violation_corpus_sans_chemin));
   assert(viole_contrat(violation_options_nulles));
+  assert(viole_contrat(violation_repli_trop_grand));
   assert(viole_contrat(violation_mot_nul));
   assert(viole_contrat(violation_mot_trop_grand));
   assert(viole_contrat(violation_graphie_nulle));
@@ -1197,12 +1694,17 @@ int main(void)
   printf("Tests du module modele :\n");
   LANCER_TEST(test_generation_lisible);
   LANCER_TEST(test_generation_ordre_1);
+  LANCER_TEST(test_ponctuation_interne);
+  LANCER_TEST(test_homographes);
+  LANCER_TEST(test_repli);
+  LANCER_TEST(test_repli_tous_les_ordres);
   LANCER_TEST(test_ordre_superieur_moins_de_melanges);
   LANCER_TEST(test_dialogues);
   LANCER_TEST(test_ponctuation_tiree);
   LANCER_TEST(test_phrase_coupee);
   LANCER_TEST(test_modele_vide);
   LANCER_TEST(test_accesseurs);
+  LANCER_TEST(test_accesseurs_repli);
   LANCER_TEST(test_apprendre_erreurs);
   LANCER_TEST(test_trouver_un_mot);
   LANCER_TEST(test_generer_depuis_un_mot);
@@ -1211,6 +1713,7 @@ int main(void)
   LANCER_TEST(test_corpus_de_plusieurs_chemins);
   LANCER_TEST(test_filtre_de_langue);
   LANCER_TEST(test_format_de_sauvegarde);
+  LANCER_TEST(test_format_version_2);
   LANCER_TEST(test_aller_retour_tous_les_ordres);
   LANCER_TEST(test_aller_retour_modele_vide);
   LANCER_TEST(test_sauvegarder_erreurs);

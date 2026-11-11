@@ -13,7 +13,10 @@ Le fichier qui l'inclut doit definir _POSIX_C_SOURCE (200809L) avant tout
                           elle a ete arretee par une violation de contrat
                           (assert -> signal SIGABRT) ;
   - creer_repertoire_temporaire, chemin_dans, ecrire_fichier, lire_fichier,
-    supprimer_arborescence : gestion de fichiers temporaires.
+    supprimer_arborescence : gestion de fichiers temporaires ;
+  - marques_bien_formees, apres_marques_ouvrantes,
+    longueur_sans_marques_fermantes, termine_par_ponctuation : forme des
+    phrases generees (tiret de dialogue, guillemets, parentheses).
 */
 #ifndef __OUTILS_TESTS_H__
 #define __OUTILS_TESTS_H__
@@ -118,8 +121,7 @@ static inline char *chemin_dans(const char *repertoire, const char *nom)
 }
 
 /** Ecrit taille octets dans un fichier (cree ou ecrase). */
-static inline void ecrire_octets(const char *chemin, const char *octets,
-                                 size_t taille)
+static inline void ecrire_octets(const char *chemin, const char *octets, size_t taille)
 {
   FILE *fichier = fopen(chemin, "wb");
 
@@ -157,8 +159,7 @@ static inline char *lire_fichier(const char *chemin)
   if (fichier != NULL) {
     contenu = malloc(capacite);
     assert(contenu != NULL);
-    while ((lus = fread(contenu + taille, 1u, capacite - taille - 1u,
-                        fichier)) > 0u) {
+    while ((lus = fread(contenu + taille, 1u, capacite - taille - 1u, fichier)) > 0u) {
       taille += lus;
       if (taille + 1u == capacite) {
         capacite *= 2u;
@@ -187,8 +188,7 @@ static inline void supprimer_arborescence(const char *chemin)
       repertoire = opendir(chemin);
       if (repertoire != NULL) {
         while ((entree = readdir(repertoire)) != NULL) {
-          if (strcmp(entree->d_name, ".") != 0
-              && strcmp(entree->d_name, "..") != 0) {
+          if (strcmp(entree->d_name, ".") != 0 && strcmp(entree->d_name, "..") != 0) {
             sous_chemin = chemin_dans(chemin, entree->d_name);
             supprimer_arborescence(sous_chemin);
             free(sous_chemin);
@@ -214,6 +214,97 @@ static inline void detruire_repertoire_temporaire(char *chemin)
 static inline double ecart(double a, double b)
 {
   return (a > b) ? (a - b) : (b - a);
+}
+
+/* Marques des phrases generees, en UTF-8 : tiret de dialogue (tiret
+   cadratin et espace), guillemets francais ouvrant et fermant. */
+#define PHRASE_TIRET "\xE2\x80\x94 "
+#define PHRASE_GUILLEMET_OUVRANT "\xC2\xAB"
+#define PHRASE_GUILLEMET_FERMANT "\xC2\xBB"
+
+/**
+ * Indique si les marques d'une phrase generee sont bien formees : les
+ * guillemets francais et les parentheses sont bien imbriques, jamais deux
+ * guillemets ni deux parentheses ouverts a la fois, et tout ce qui est
+ * ouvert est referme.
+ */
+static inline bool marques_bien_formees(const char *phrase)
+{
+  char pile[2] = { '\0', '\0' };
+  unsigned int hauteur = 0u;
+  bool valide = true;
+  const char *c;
+  char marque;
+
+  for (c = phrase; valide && *c != '\0'; c++) {
+    marque = '\0';
+    if (strncmp(c, PHRASE_GUILLEMET_OUVRANT, 2u) == 0) {
+      marque = 'g';
+    } else if (*c == '(') {
+      marque = 'p';
+    }
+    if (marque != '\0') {
+      valide = (hauteur == 0u || (hauteur == 1u && pile[0] != marque));
+      if (valide) {
+        pile[hauteur] = marque;
+        hauteur++;
+      }
+    } else if (strncmp(c, PHRASE_GUILLEMET_FERMANT, 2u) == 0 || *c == ')') {
+      valide = (hauteur > 0u
+                && pile[hauteur - 1u] == ((*c == ')') ? 'p' : 'g'));
+      if (valide) {
+        hauteur--;
+      }
+    }
+  }
+  return valide && hauteur == 0u;
+}
+
+/** Debut d'une phrase generee apres ses marques ouvrantes : tiret de
+    dialogue, parenthese ouvrante puis guillemet ouvrant, chacun
+    facultatif. */
+static inline const char *apres_marques_ouvrantes(const char *phrase)
+{
+  if (strncmp(phrase, PHRASE_TIRET, strlen(PHRASE_TIRET)) == 0) {
+    phrase += strlen(PHRASE_TIRET);
+  }
+  if (*phrase == '(') {
+    phrase++;
+  }
+  if (strncmp(phrase, PHRASE_GUILLEMET_OUVRANT, strlen(PHRASE_GUILLEMET_OUVRANT)) == 0) {
+    phrase += strlen(PHRASE_GUILLEMET_OUVRANT);
+  }
+  return phrase;
+}
+
+/** Longueur d'une phrase generee sans ses marques fermantes finales
+    (guillemets fermants et parentheses fermantes). */
+static inline size_t longueur_sans_marques_fermantes(const char *phrase)
+{
+  size_t longueur = strlen(phrase);
+  size_t avant;
+
+  do {
+    avant = longueur;
+    if (longueur >= 2u
+        && strncmp(phrase + longueur - 2u, PHRASE_GUILLEMET_FERMANT, 2u) == 0) {
+      longueur -= 2u;
+    } else if (longueur >= 1u && phrase[longueur - 1u] == ')') {
+      longueur--;
+    }
+  } while (longueur != avant);
+  return longueur;
+}
+
+/** Indique si une phrase generee se termine par une ponctuation finale
+    ('.', '!', '?' ou "..."), suivie eventuellement de marques fermantes. */
+static inline bool termine_par_ponctuation(const char *phrase)
+{
+  size_t longueur = longueur_sans_marques_fermantes(phrase);
+
+  return longueur >= 1u && (phrase[longueur - 1u] == '.'
+                            || phrase[longueur - 1u] == '!'
+                            || phrase[longueur - 1u] == '?');
 }
 
 #endif

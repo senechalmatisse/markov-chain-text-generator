@@ -284,6 +284,83 @@ static void test_choix_selon_le_contexte(void)
   lexique_detruire(&l);
 }
 
+static void test_contextes_de_deux_mots(void)
+{
+  /* mots 1 = qui, 2 = est, 3 = la, 4 = elle ; bigramme 5 = (est, la) */
+  lexique_t *l = lexique_avec_mots(5u);
+  char tampon[16];
+  unsigned int mot_avant = 0u;
+  unsigned int bigramme = 0u;
+
+  assert(lexique_ajouter_bigramme(l, 3u) == 5u);
+  assert(lexique_nb_contextes(l) == 0u);
+  /* "qui est la" (accent grave) deux fois, "elle est la" une fois */
+  observer(l, 5u, "l\xC3\xA0", true, false, LIAISON_ESPACE, 2u);
+  observer(l, 5u, "la", true, false, LIAISON_ESPACE, 1u);
+  assert(lexique_observer_contexte(l, 1u, 5u, "l\xC3\xA0", true));
+  assert(lexique_observer_contexte(l, 1u, 5u, "L\xC3\xA0", true));
+  assert(lexique_observer_contexte(l, 4u, 5u, "la", true));
+  /* un fichier sans accent ne renseigne pas sur les accents */
+  assert(lexique_observer_contexte(l, 2u, 5u, "la", false));
+  assert(lexique_nb_contextes(l) == 2u);
+  lexique_finaliser(l);
+  assert(lexique_nb_contextes(l) == 2u);
+  /* le bigramme choisit l'accent grave (rang 0) ; (qui, (est, la)) suit
+     son bigramme, (elle, (est, la)) est une exception */
+  assert(lexique_variante_bigramme(l, 5u) == 0u);
+  assert(lexique_contexte(l, 0u, &mot_avant, &bigramme) == LEXIQUE_AUCUNE);
+  assert(mot_avant == 1u && bigramme == 5u);
+  assert(lexique_contexte(l, 1u, &mot_avant, &bigramme) == 1u);
+  assert(mot_avant == 4u && bigramme == 5u);
+  assert(lexique_variante_contexte(l, 4u, 5u) == 1u);
+  assert(lexique_variante_contexte(l, 1u, 5u) == LEXIQUE_AUCUNE);
+  assert(lexique_variante_contexte(l, 2u, 5u) == LEXIQUE_AUCUNE);
+  assert(lexique_variante_contexte(l, 4u, 1u) == LEXIQUE_AUCUNE);
+  /* ecriture : la variante du contexte s'il est une exception, sinon
+     celle du bigramme ; sans contexte, comme lexique_ecrire */
+  assert(lexique_ecrire_contexte(l, 4u, 5u, false, tampon, sizeof(tampon)) == 2u);
+  assert(strcmp(tampon, "la") == 0);
+  assert(lexique_ecrire_contexte(l, 1u, 5u, false, tampon, sizeof(tampon)) == 3u);
+  assert(strcmp(tampon, "l\xC3\xA0") == 0);
+  assert(lexique_ecrire_contexte(l, LEXIQUE_AUCUNE, 5u, true, tampon, sizeof(tampon)) == 3u);
+  assert(strcmp(tampon, "L\xC3\xA0") == 0);
+  assert(lexique_ecrire_contexte(l, 4u, 5u, true, NULL, 0u) == 2u);
+  assert(lexique_ecrire_contexte(l, 4u, 5u, true, tampon, 2u) == 2u);
+  assert(strcmp(tampon, "L\xC3\xA0") == 0);     /* tampon trop petit */
+  /* rechargement d'un modele : une exception fixee, puis remplacee */
+  assert(lexique_fixer_contexte(l, 2u, 5u, 1u));
+  assert(lexique_variante_contexte(l, 2u, 5u) == 1u);
+  assert(lexique_nb_contextes(l) == 3u);
+  assert(lexique_fixer_contexte(l, 4u, 5u, 0u));
+  assert(lexique_variante_contexte(l, 4u, 5u) == 0u);
+  assert(lexique_nb_contextes(l) == 3u);
+  lexique_detruire(&l);
+}
+
+static void test_contextes_nombreux(void)
+{
+  /* assez de contextes pour agrandir plusieurs fois la table des votes ;
+     une exception sur deux */
+  lexique_t *l = lexique_avec_mots(300u);
+  unsigned int i;
+  unsigned int mot_avant;
+  unsigned int bigramme;
+
+  observer(l, 1u, "\xC3\xA0", true, false, LIAISON_ESPACE, 1u);
+  observer(l, 1u, "a", true, false, LIAISON_ESPACE, 1u);
+  observer(l, 1u, "\xC3\xA0", true, false, LIAISON_ESPACE, 1u);
+  for (i = 0u; i < 300u; i++) {
+    assert(lexique_observer_contexte(l, i, 1u, (i % 2u == 0u) ? "a" : "\xC3\xA0", true));
+  }
+  assert(lexique_nb_contextes(l) == 300u);
+  lexique_finaliser(l);
+  for (i = 0u; i < 300u; i++) {
+    assert(lexique_contexte(l, i, &mot_avant, &bigramme) == ((i % 2u == 0u) ? 1u : LEXIQUE_AUCUNE));
+    assert(mot_avant == i && bigramme == 1u);
+  }
+  lexique_detruire(&l);
+}
+
 static void test_liaisons(void)
 {
   lexique_t *l = lexique_avec_mots(4u);
@@ -303,6 +380,87 @@ static void test_liaisons(void)
   assert(lexique_marques(l, 1u) == MARQUE_AUCUNE);
   assert(lexique_marques(l, 0u) == MARQUE_AUCUNE);
   lexique_detruire(&l);
+}
+
+/** Ecrit une lettre (point de code < 0x800) en UTF-8 ; renvoie la longueur. */
+static size_t encoder(unsigned long point_code, char *destination)
+{
+  size_t taille = 1u;
+
+  if (point_code < 0x80u) {
+    destination[0] = (char)point_code;
+  } else {
+    destination[0] = (char)(0xC0u | (point_code >> 6));
+    destination[1] = (char)(0x80u | (point_code & 0x3Fu));
+    taille = 2u;
+  }
+  destination[taille] = '\0';
+  return taille;
+}
+
+static void test_lettres_etendues(void)
+{
+  char graphie[32];
+  char autre[32];
+  unsigned long c;
+  size_t taille;
+  unsigned int nb_lettres = 0u;
+  unsigned int nb_majuscules = 0u;
+
+  /* toutes les lettres de Latin-1, de Latin etendu A et les lettres
+     roumaines a virgule : la casse fait l'aller-retour sans changer de
+     taille ; une majuscule a une minuscule distincte, et inversement */
+  for (c = 0x41u; c <= 0x21Bu; c++) {
+    if (!lexique_est_lettre(c)) {
+      continue;
+    }
+    nb_lettres++;
+    taille = encoder(c, graphie);
+    assert(lexique_graphie_valide(graphie));
+    strcpy(autre, graphie);
+    lexique_appliquer_casse(autre, CASSE_MINUSCULE);
+    assert(strlen(autre) == taille);
+    assert(lexique_variante_valide(autre));
+    if (lexique_est_majuscule(c)) {
+      nb_majuscules++;
+      assert(strcmp(autre, graphie) != 0);
+      assert(lexique_casse(graphie) == CASSE_CAPITALE);
+      lexique_appliquer_casse(autre, CASSE_CAPITALE);
+      assert(strcmp(autre, graphie) == 0);     /* aller-retour */
+    } else {
+      assert(strcmp(autre, graphie) == 0);     /* deja en minuscule */
+      lexique_appliquer_casse(autre, CASSE_MAJUSCULE);
+      assert(strlen(autre) == taille);
+      lexique_appliquer_casse(autre, CASSE_MINUSCULE);
+      assert(strcmp(autre, graphie) == 0);
+    }
+  }
+  /* 52 ASCII, 62 de Latin-1, 128 de Latin etendu A, 4 roumaines */
+  assert(nb_lettres == 52u + 62u + 128u + 4u);
+  assert(nb_majuscules == 26u + 30u + 61u + 2u + 1u);
+  /* hors des plages : ni lettre ni graphie */
+  assert(!lexique_est_lettre(0xD7u) && !lexique_est_lettre(0x180u));
+  assert(!lexique_est_lettre(0x217u) && !lexique_est_lettre(0x21Cu));
+  assert(!lexique_est_lettre('1') && !lexique_est_majuscule('1'));
+  assert(!lexique_graphie_valide("\xC6\x80"));
+  /* exemples : polonais, tcheque, roumain, hongrois */
+  strcpy(graphie, "\xC5\x81\xC3\x93" "D\xC5\xB9");           /* LODZ */
+  assert(lexique_casse(graphie) == CASSE_MAJUSCULE);
+  lexique_appliquer_casse(graphie, CASSE_CAPITALE);
+  assert(strcmp(graphie, "\xC5\x81\xC3\xB3" "d\xC5\xBA") == 0);
+  strcpy(graphie, "\xC8\x99tiin\xC8\x9B\xC4\x83");
+  lexique_appliquer_casse(graphie, CASSE_MAJUSCULE);
+  assert(strcmp(graphie, "\xC8\x98TIIN\xC8\x9A\xC4\x82") == 0);
+  strcpy(graphie, "\xC5\x91sz");
+  lexique_appliquer_casse(graphie, CASSE_CAPITALE);
+  assert(strcmp(graphie, "\xC5\x90sz") == 0);
+  /* i turcs, eszett, s long : sans casse, inchanges */
+  strcpy(graphie, "\xC4\xB1l\xC4\xB1k");
+  lexique_appliquer_casse(graphie, CASSE_MAJUSCULE);
+  assert(strcmp(graphie, "\xC4\xB1L\xC4\xB1K") == 0);
+  strcpy(graphie, "\xC4\xB0stanbul");
+  assert(lexique_variante_valide(graphie));
+  assert(lexique_casse(graphie) == CASSE_MINUSCULE);
 }
 
 static void test_separateur_valide(void)
@@ -339,11 +497,13 @@ static void test_marques_de_dialogue(void)
      liaison est ignoree, le guillemet fermant aussi */
   observer_marques(l, 3u, "oui", true, LIAISON_VIRGULE, MARQUE_TIRET | MARQUE_FERME_GUILLEMET, 3u);
   observer_marques(l, 3u, "oui", true, LIAISON_ESPACE, MARQUE_AUCUNE, 2u);
+  /* bigramme 3 bis : la parenthese fermante est ignoree aussi */
+  observer_marques(l, 3u, "oui", true, LIAISON_ESPACE, MARQUE_TIRET | MARQUE_FERME_PARENTHESE, 1u);
   /* bigramme 4 : debut de phrase, sans tiret le plus souvent */
   observer_marques(l, 4u, "il", true, LIAISON_ESPACE, MARQUE_TIRET, 1u);
   observer_marques(l, 4u, "il", true, LIAISON_ESPACE, MARQUE_AUCUNE, 5u);
-  /* bigramme 5 : toutes les marques a la fois */
-  observer_marques(l, 5u, "non", false, LIAISON_POINT_VIRGULE, MARQUES_TOUTES, 1u);
+  /* bigramme 5 : toutes les marques a la fois, et une ponctuation interne */
+  observer_marques(l, 5u, "non", false, LIAISON_SUSPENSION, MARQUES_TOUTES, 1u);
   lexique_finaliser(l);
 
   assert(lexique_liaison(l, 1u) == LIAISON_DEUX_POINTS);
@@ -354,7 +514,7 @@ static void test_marques_de_dialogue(void)
   assert(lexique_marques(l, 3u) == MARQUE_TIRET);
   assert(lexique_liaison(l, 4u) == LIAISON_ESPACE);
   assert(lexique_marques(l, 4u) == MARQUE_AUCUNE);
-  assert(lexique_liaison(l, 5u) == LIAISON_POINT_VIRGULE);
+  assert(lexique_liaison(l, 5u) == LIAISON_SUSPENSION);
   assert(lexique_marques(l, 5u) == MARQUES_TOUTES);
   /* les marques n'influencent ni la variante ni la casse */
   verifier_ecriture(l, 3u, true, "Oui");
@@ -576,6 +736,79 @@ static void violation_ecrire_mot_vide(void)
   lexique_ecrire_mot(l, 0u, false, tampon, sizeof(tampon));  /* 0 variante */
 }
 
+static void violation_contexte_apres_finalisation(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  lexique_observer_contexte(l, 2u, 1u, "mot", true);
+}
+
+static void violation_contexte_variante_inconnue(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_observer_contexte(l, 2u, 1u, "m\xC3\xB4t", true);
+}
+
+static void violation_contexte_mot_avant_inexistant(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_observer_contexte(l, 3u, 1u, "mot", true);
+}
+
+static void violation_contexte_avant_finalisation(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+  unsigned int mot_avant;
+  unsigned int bigramme;
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  assert(lexique_observer_contexte(l, 2u, 1u, "mot", true));
+  lexique_contexte(l, 0u, &mot_avant, &bigramme);
+}
+
+static void violation_contexte_rang_inexistant(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+  unsigned int mot_avant;
+  unsigned int bigramme;
+
+  lexique_finaliser(l);
+  lexique_contexte(l, 0u, &mot_avant, &bigramme);
+}
+
+static void violation_ecrire_contexte_mot_avant_inexistant(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+  char tampon[8];
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  lexique_ecrire_contexte(l, 3u, 1u, false, tampon, sizeof(tampon));
+}
+
+static void violation_fixer_contexte_variante_inexistante(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_finaliser(l);
+  lexique_fixer_contexte(l, 2u, 1u, 1u);
+}
+
+static void violation_fixer_contexte_avant_finalisation(void)
+{
+  lexique_t *l = lexique_avec_mots(3u);
+
+  observer(l, 1u, "mot", true, false, LIAISON_ESPACE, 1u);
+  lexique_fixer_contexte(l, 2u, 1u, 0u);
+}
+
 static void sans_violation(void)
 {
   lexique_t *l = lexique_avec_mots(2u);
@@ -603,6 +836,14 @@ static void test_contrats(void)
   assert(viole_contrat(violation_fixer_separateur_invalide));
   assert(viole_contrat(violation_ecrire_mot_inexistant));
   assert(viole_contrat(violation_ecrire_mot_vide));
+  assert(viole_contrat(violation_contexte_apres_finalisation));
+  assert(viole_contrat(violation_contexte_variante_inconnue));
+  assert(viole_contrat(violation_contexte_mot_avant_inexistant));
+  assert(viole_contrat(violation_contexte_avant_finalisation));
+  assert(viole_contrat(violation_contexte_rang_inexistant));
+  assert(viole_contrat(violation_ecrire_contexte_mot_avant_inexistant));
+  assert(viole_contrat(violation_fixer_contexte_variante_inexistante));
+  assert(viole_contrat(violation_fixer_contexte_avant_finalisation));
 }
 
 
@@ -619,7 +860,10 @@ int main(void)
   LANCER_TEST(test_variante_selon_les_fichiers_accentues);
   LANCER_TEST(test_casse_hors_debut_de_phrase);
   LANCER_TEST(test_choix_selon_le_contexte);
+  LANCER_TEST(test_contextes_de_deux_mots);
+  LANCER_TEST(test_contextes_nombreux);
   LANCER_TEST(test_liaisons);
+  LANCER_TEST(test_lettres_etendues);
   LANCER_TEST(test_separateur_valide);
   LANCER_TEST(test_marques_de_dialogue);
   LANCER_TEST(test_vote_majoritaire);

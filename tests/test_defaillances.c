@@ -33,6 +33,7 @@ N-ieme (echecs persistants). A chaque fois on verifie :
 #include "../src/repertoire.h"
 #include "../src/sauvegarde.h"
 #include "../src/modele.h"
+#include "../src/mail.h"
 
 /* ======================================================================== */
 /*                        Allocateur instrumente                            */
@@ -184,9 +185,34 @@ static char *corpus = NULL;
 static char *chemin_texte = NULL;
 static char *chemin_modele = NULL;
 static char *chemin_modele_3 = NULL;
+static char *chemin_modele_repli = NULL;
 static char *chemin_sortie = NULL;
+static char *chemin_courrier = NULL;
 static modele_t *modele = NULL;
 static modele_t *modele_3 = NULL;
+static modele_t *modele_avec_repli = NULL;
+
+/** Boite mbox de deux messages : quoted-printable, citation, signature,
+    alternative (Latin-1, HTML), piece jointe en base64, message joint. */
+static const char COURRIER[] =
+  "From jean@example.com Mon Mar  3 10:00:00 2024\n"
+  "From: Jean\nTo: Paul\nSubject: Rendez-vous\n"
+  "Content-Type: text/plain; charset=utf-8\n"
+  "Content-Transfer-Encoding: quoted-printable\n\n"
+  "Rendez-vous =C3=A0 midi devant la gare.\n"
+  "Le 2 mars, Paul a =C3=A9crit :\n> Quand ?\n-- \nJean\n\n"
+  "From paul@example.com Mon Mar  3 11:00:00 2024\n"
+  "From: Paul\nTo: Jean\n"
+  "Content-Type: multipart/mixed; boundary=\"ext\"\n\n"
+  "--ext\nContent-Type: multipart/alternative; boundary=int\n\n"
+  "--int\nContent-Type: text/html; charset=utf-8\n\n"
+  "<p>Tr&egrave;s bien, &agrave; midi.</p>\n"
+  "--int--\n"
+  "--ext\nContent-Type: application/pdf\n"
+  "Content-Transfer-Encoding: base64\n\nJVBERi0xLjQK\n"
+  "--ext\nContent-Type: message/rfc822\n\nFrom: Marie\nTo: Paul\n"
+  "Content-Type: text/plain; charset=iso-8859-1\n\nJ'arrive \xE0 midi.\n"
+  "--ext--\n";
 
 /** Corpus du filtre de langue : deux textes francais, un texte anglais. */
 static char *corpus_langues = NULL;
@@ -366,8 +392,7 @@ static void scenario_chaine_de_markov(void)
 
 /** Graphies observees par le scenario du lexique. */
 static const char *const GRAPHIES[] = {
-  "\xC3\xA9t\xC3\xA9", "ete", "Ete", "\xC3\x89T\xC3\x89", "et\xC3\xA9",
-  "\xC5\x92uvre"
+  "\xC3\xA9t\xC3\xA9", "ete", "Ete", "\xC3\x89T\xC3\x89", "et\xC3\xA9", "\xC5\x92uvre"
 };
 
 static void scenario_lexique(void)
@@ -379,6 +404,7 @@ static void scenario_lexique(void)
   unsigned int mot;
   unsigned int nb_avant;
   unsigned int resultat;
+  unsigned int contextes_avant;
   char tampon[4000];
   bool succes = true;
   bool observe;
@@ -423,12 +449,31 @@ static void scenario_lexique(void)
             assert(lexique_variante_valide(lexique_variante(l, mot, r)));
           }
           succes = false;
+        } else {
+          /* contexte de deux mots de la meme occurrence */
+          contextes_avant = lexique_nb_contextes(l);
+          SURVEILLER(observe = lexique_observer_contexte(
+                       l, i % lexique_nb_mots(l), mot,
+                       (i == 77u) ? longue : GRAPHIES[i % 6u], true));
+          if (!observe) {
+            assert(errno == ENOMEM);
+            assert(lexique_nb_contextes(l) == contextes_avant);
+            succes = false;
+          }
         }
       }
     }
     if (succes) {
       SURVEILLER(lexique_finaliser(l));
       assert(lexique_ecrire(l, 1u, true, tampon, sizeof(tampon)) > 0u);
+      assert(lexique_ecrire_contexte(l, 3u, 1u, true, tampon, sizeof(tampon)) > 0u);
+      contextes_avant = lexique_nb_contextes(l);
+      SURVEILLER(observe = lexique_fixer_contexte(l, 29u, 2u, 0u));
+      if (observe) {
+        assert(lexique_variante_contexte(l, 29u, 2u) == 0u);
+      } else {
+        assert(errno == ENOMEM && lexique_nb_contextes(l) == contextes_avant);
+      }
     }
     lexique_detruire(&l);
   }
@@ -452,6 +497,50 @@ static void scenario_iterateur(void)
     /* fin normale (tous les mots lus) ou erreur ENOMEM signalee */
     assert(iterateur_mots_erreur(it) == ENOMEM || (iterateur_mots_erreur(it) == 0 && nb_mots == 7u));
     iterateur_mots_detruire(&it);
+  }
+}
+
+/** Mots ajoutes a la fin du courrier (cf. main) : il depasse ainsi la
+    fenetre de detection et doit etre lu en plusieurs fois. */
+#define NB_MOTS_REMPLISSAGE 1500u
+
+static void scenario_courrier(void)
+{
+  iterateur_mots_t *it = NULL;
+  const char *mot;
+  unsigned int nb_mots = 0u;
+
+  SURVEILLER(it = iterateur_mots_creer(chemin_courrier));
+  if (it == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(iterateur_mots_nb_messages(it) == 3u);
+    do {
+      SURVEILLER(mot = iterateur_mots_suivant(it, NULL));
+      nb_mots += (mot != NULL) ? 1u : 0u;
+    } while (mot != NULL);
+    /* "rendez vous a midi devant la gare", "tres bien a midi", "j arrive
+       a midi", puis les mots de remplissage (cf. main) */
+    assert(iterateur_mots_erreur(it) == ENOMEM || (iterateur_mots_erreur(it) == 0
+               && nb_mots == 15u + NB_MOTS_REMPLISSAGE));
+    iterateur_mots_detruire(&it);
+  }
+}
+
+static void scenario_extraire_texte(void)
+{
+  char *texte = NULL;
+  size_t taille = 77u;
+  size_t nb = 77u;
+
+  SURVEILLER(texte = mail_extraire_texte(COURRIER, sizeof(COURRIER) - 1u, &taille, &nb));
+  if (texte == NULL) {
+    /* echec : resultats inchanges */
+    assert(errno == ENOMEM && taille == 77u && nb == 77u);
+  } else {
+    assert(nb == 2u && strlen(texte) == taille);
+    assert(strstr(texte, "Rendez-vous") != NULL);
+    free(texte);
   }
 }
 
@@ -483,6 +572,23 @@ static void scenario_repertoire_creer_markov(void)
     markov_detruire(&m);
   }
   hachage_detruire(&mots);
+}
+
+/** Nombre de contextes de deux mots qui ne sont pas des exceptions (ils
+    ne sont pas sauvegardes). */
+static unsigned int nb_contextes_ordinaires(const lexique_t *l)
+{
+  unsigned int i;
+  unsigned int mot_avant;
+  unsigned int bigramme;
+  unsigned int nb = 0u;
+
+  for (i = 0u; i < lexique_nb_contextes(l); i++) {
+    if (lexique_contexte(l, i, &mot_avant, &bigramme) == LEXIQUE_AUCUNE) {
+      nb++;
+    }
+  }
+  return nb;
 }
 
 /** Apprentissage complet d'un modele, d'ordre donne. */
@@ -707,9 +813,9 @@ static void scenario_modele_mot(void)
  */
 static void scenario_apprendre_toutes_options(void)
 {
-  const repertoire_bilan_t temoin = { 7u, 7u, 7u, 7u, 7u, LANGUE_ALLEMAND };
+  const repertoire_bilan_t temoin = { 7u, 7u, 7u, 7u, 7u, 7u, LANGUE_ALLEMAND };
   repertoire_bilan_t bilan = temoin;
-  modele_options_t options = { 3u, true, true, true };
+  modele_options_t options = { 3u, true, true, true, 0u };
   const char *chemins[2];
   modele_t *m = NULL;
   char *phrase;
@@ -735,6 +841,49 @@ static void scenario_apprendre_toutes_options(void)
 static void scenario_apprendre_ordre_3(void)
 {
   apprendre_modele(3u);
+}
+
+/** Ordre 4, repli a l'ordre 3 (etats de repli), contextes de deux mots
+    (corpus accentue) : apprentissage, generation, sauvegarde. */
+static void scenario_apprendre_repli(void)
+{
+  modele_options_t options = { 4u, true, false, false, 3u };
+  const char *chemins[1];
+  modele_t *m = NULL;
+  char *phrase;
+
+  chemins[0] = corpus;
+  SURVEILLER(m = modele_apprendre_corpus(chemins, 1u, 3u, &options, NULL));
+  if (m == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(modele_ordre_repli(m) == 3u && modele_etats_repli(m) != NULL);
+    assert(lexique_nb_contextes(modele_lexique(m)) > 0u);
+    phrase = modele_generer_phrase(m);
+    assert(phrase != NULL);
+    free(phrase);
+    modele_detruire(&m);
+  }
+}
+
+static void scenario_charger_repli(void)
+{
+  modele_t *m = NULL;
+  char *phrase;
+
+  SURVEILLER(m = modele_charger(chemin_modele_repli, 1u));
+  if (m == NULL) {
+    assert(errno == ENOMEM);
+  } else {
+    assert(modele_ordre(m) == 4u && modele_ordre_repli(m) == 3u);
+    assert(lexique_nb_contextes(modele_lexique(m))
+           == lexique_nb_contextes(modele_lexique(modele_avec_repli))
+              - nb_contextes_ordinaires(modele_lexique(modele_avec_repli)));
+    phrase = modele_generer_phrase(m);
+    assert(phrase != NULL);
+    free(phrase);
+    modele_detruire(&m);
+  }
 }
 
 static void scenario_generer_phrase_depuis(void)
@@ -886,6 +1035,26 @@ static void test_charger_ordre_3(void)
   rejouer(scenario_charger_ordre_3);
 }
 
+static void test_courrier(void)
+{
+  rejouer(scenario_courrier);
+}
+
+static void test_extraire_texte(void)
+{
+  rejouer(scenario_extraire_texte);
+}
+
+static void test_apprendre_repli(void)
+{
+  rejouer(scenario_apprendre_repli);
+}
+
+static void test_charger_repli(void)
+{
+  rejouer(scenario_charger_repli);
+}
+
 int main(void)
 {
   static char texte_long[5100];
@@ -912,13 +1081,39 @@ int main(void)
   ecrire_fichier(chemin_texte, texte_long);
   chemin_modele = chemin_dans(autre, "modele.sauvegarde");
   chemin_modele_3 = chemin_dans(autre, "modele_3.sauvegarde");
+  chemin_modele_repli = chemin_dans(autre, "modele_avec_repli.sauvegarde");
   chemin_sortie = chemin_dans(autre, "sortie.sauvegarde");
+  chemin_courrier = chemin_dans(autre, "boite.mbox");
+  {
+    char *contenu = malloc(sizeof(COURRIER) + 200u + 5u * NB_MOTS_REMPLISSAGE);
+    unsigned int k;
+
+    /* troisieme message, plus long que la fenetre de detection */
+    assert(contenu != NULL);
+    strcpy(contenu, COURRIER);
+    strcat(contenu, "\nFrom marie@example.com Tue Mar  4 08:00:00 2024\n"
+                    "From: Marie\nTo: Jean\n\n");
+    for (k = 0u; k < NB_MOTS_REMPLISSAGE; k++) {
+      strcat(contenu, (k % 12u == 11u) ? "mot\n" : "mot ");
+    }
+    ecrire_fichier(chemin_courrier, contenu);
+    free(contenu);
+  }
   modele = modele_apprendre(corpus, 5u, 2u, true);
   assert(modele != NULL);
   assert(modele_sauvegarder(modele, chemin_modele));
   modele_3 = modele_apprendre(corpus, 5u, 3u, true);
   assert(modele_3 != NULL);
   assert(modele_sauvegarder(modele_3, chemin_modele_3));
+  {
+    modele_options_t options = { 4u, true, false, false, 3u };
+    const char *chemins[1];
+
+    chemins[0] = corpus;
+    modele_avec_repli = modele_apprendre_corpus(chemins, 1u, 5u, &options, NULL);
+    assert(modele_avec_repli != NULL);
+    assert(modele_sauvegarder(modele_avec_repli, chemin_modele_repli));
+  }
   /* filtre de langue : deux textes francais, un anglais (5 phrases) */
   corpus_langues = creer_repertoire_temporaire();
   creer_fichier_dans(corpus_langues, "a.txt", TEXTE_FRANCAIS);
@@ -949,6 +1144,10 @@ int main(void)
   LANCER_TEST(test_apprendre_toutes_options);
   LANCER_TEST(test_generer_phrase_depuis);
   LANCER_TEST(test_charger_ordre_3);
+  LANCER_TEST(test_courrier);
+  LANCER_TEST(test_extraire_texte);
+  LANCER_TEST(test_apprendre_repli);
+  LANCER_TEST(test_charger_repli);
   printf("  (%lu executions de scenarios, chacune avec un echec "
          "d'allocation different)\n", nb_executions);
   afficher_bilan("defaillances");
@@ -956,11 +1155,14 @@ int main(void)
   assert(blocs_vivants == vivants_initiaux);
   modele_detruire(&modele);
   modele_detruire(&modele_3);
+  modele_detruire(&modele_avec_repli);
   free(sous);
   free(chemin_texte);
   free(chemin_modele);
   free(chemin_modele_3);
+  free(chemin_modele_repli);
   free(chemin_sortie);
+  free(chemin_courrier);
   free(chemin_anglais);
   detruire_repertoire_temporaire(corpus);
   detruire_repertoire_temporaire(corpus_langues);

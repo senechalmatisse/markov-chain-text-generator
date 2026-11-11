@@ -4,8 +4,8 @@ Fichier lexique.h
 
 Lexique d'affichage : memorise comment chaque mot s'ecrit dans les textes
 appris, pour afficher le texte genere avec ses accents, ses majuscules, ses
-liaisons ("c'etait", "peut-etre", "M. Madeleine", "oui, monsieur") et ses
-marques de dialogue (tirets et guillemets, cf. texte.h).
+liaisons ("c'etait", "peut-etre", "M. Madeleine", "oui, monsieur", "Ah!
+dit-il") et ses marques (tirets, guillemets, parentheses, cf. texte.h).
 
 Les mots et les bigrammes (mot precedent, mot) sont designes par leurs
 identifiants, attribues par l'appelant dans l'ordre 0, 1, 2, ... comme les
@@ -36,21 +36,31 @@ observe chaque occurrence. lexique_finaliser calcule alors les choix :
     dans ce contexte (memes regles) : le contexte distingue le verbe "a" de
     la preposition dans "il a" / "va a", ou "il m'a" de "M. Madeleine". Le
     choix du mot sert quand le bigramme n'a pas de vote.
-  - SEPARATEUR d'un bigramme : couple (liaison, marques de dialogue)
-    majoritaire entre ses deux mots. Pour un bigramme (0, v), ce sont les
+  - SEPARATEUR d'un bigramme : couple (liaison, marques) majoritaire entre
+    ses deux mots. Pour un bigramme (0, v), ce sont les
     marques placees devant v en debut de phrase : un mot qui commence le
     plus souvent une replique ("--Oui, dit-il") garde son tiret.
-  Les votes de bigramme utilisent l'algorithme de Boyer et Moore (majorite
-  en une passe, 8 octets par vote) : la memoire reste proportionnelle au
-  nombre de bigrammes.
+  - CONTEXTES DE DEUX MOTS : pour un bigramme (u, v) precede du mot t, la
+    variante majoritaire de v apres "t u" (cf. lexique_observer_contexte).
+    A la finalisation, seuls les contextes dont le choix differe de celui
+    du bigramme sont gardes, comme exceptions : "qu'il eut" s'ecrit avec
+    l'accent circonflexe du subjonctif quand "il eut" s'ecrit sans. Un
+    contexte n'a qu'un vote de variante : la casse et le separateur restent
+    ceux du bigramme.
+  Les votes de bigramme et de contexte utilisent l'algorithme de Boyer et
+  Moore (majorite en une passe, 8 octets par vote) : la memoire reste
+  proportionnelle au nombre de bigrammes et de contextes.
 
 PHASE D'UTILISATION : consultation des choix et ecriture des graphies.
-lexique_fixer_mot et lexique_fixer_bigramme redefinissent les choix (pour
-recharger un modele sauvegarde).
+lexique_fixer_mot, lexique_fixer_bigramme et lexique_fixer_contexte
+redefinissent les choix (pour recharger un modele sauvegarde).
 
 LETTRES RECONNUES (dans les graphies) : 'a'..'z', 'A'..'Z', les lettres de
-U+00C0 a U+00FF (sauf les signes multiplication et division), OE et oe lies
-(U+0152, U+0153) et Y trema majuscule (U+0178), encodees en UTF-8.
+U+00C0 a U+00FF (sauf les signes multiplication et division), toutes celles
+de Latin etendu A (U+0100 a U+017F : OE lies, lettres polonaises, tcheques,
+hongroises, turques, esperanto...) et les lettres roumaines a virgule
+(U+0218 a U+021B), encodees en UTF-8. Toutes s'ecrivent sur 1 ou 2 octets,
+en majuscule comme en minuscule.
 */
 #ifndef __LEXIQUE_H__
 #define __LEXIQUE_H__
@@ -83,6 +93,29 @@ typedef enum {
 #define LEXIQUE_NB_MAX (UINT_MAX - 1u)
 
 /**
+ * @brief  Indique si un caractere est une lettre reconnue : lettres ASCII,
+ *         lettres de Latin-1 (U+00C0 a U+00FF, sauf la multiplication et la
+ *         division), de Latin etendu A (U+0100 a U+017F) et lettres
+ *         roumaines a virgule (U+0218 a U+021B).
+ * @param  point_code  point de code Unicode.
+ * @pre    aucune.
+ * @note   Complexite : O(1).
+ */
+bool lexique_est_lettre(unsigned long point_code);
+
+/**
+ * @brief  Indique si un caractere est une lettre majuscule. Les lettres
+ *         dont la majuscule (ou la minuscule) n'a pas la meme taille en
+ *         UTF-8 sont considerees comme sans casse : eszett, i turcs avec et
+ *         sans point (U+0130, U+0131), kra, n apostrophe et s long.
+ * @param  point_code  point de code Unicode.
+ * @pre    aucune.
+ * @post   si le resultat est true, lexique_est_lettre(point_code).
+ * @note   Complexite : O(1).
+ */
+bool lexique_est_majuscule(unsigned long point_code);
+
+/**
  * @brief  Indique si un couple (liaison, marques) decrit un separateur
  *         possible : une apostrophe ou un trait d'union est le seul signe
  *         entre deux mots, il n'est donc accompagne d'aucune marque.
@@ -97,6 +130,7 @@ bool lexique_separateur_valide(liaison_t liaison, unsigned int marques);
 /*
 Notations utilisees dans les contrats :
   nb_mots(l), nb_bigrammes(l)  = lexique_nb_mots(l), lexique_nb_bigrammes(l)
+  nb_contextes(l)              = lexique_nb_contextes(l)
   mot(l, b)                    = lexique_mot_bigramme(l, b)
   nb_variantes(l, m)           = lexique_nb_variantes(l, m)
   finalise(l)                  = lexique_est_finalise(l)
@@ -227,11 +261,11 @@ unsigned int lexique_ajouter_variante(lexique_t *l, unsigned int mot, const char
  *                       renseigne sur les accents du mot).
  * @param  debut_phrase  true si le mot commence une phrase : sa casse ne
  *                       vote alors qu'en dernier recours, la liaison est
- *                       ignoree (LIAISON_ESPACE) ainsi que la marque
- *                       MARQUE_FERME_GUILLEMET (elle concerne la phrase
- *                       precedente).
+ *                       ignoree (LIAISON_ESPACE) ainsi que les marques
+ *                       fermantes MARQUES_FERMANTES (elles concernent la
+ *                       phrase precedente).
  * @param  liaison       liaison entre le mot precedent et ce mot.
- * @param  marques       marques de dialogue placees devant ce mot.
+ * @param  marques       marques placees devant ce mot.
  * @pre    l != NULL ; !finalise(l) ; bigramme < nb_bigrammes(l) ;
  *         graphie != NULL ; valide(graphie) ;
  *         lexique_separateur_valide(liaison, marques).
@@ -247,13 +281,43 @@ bool lexique_observer(lexique_t *l, unsigned int bigramme,
                       liaison_t liaison, unsigned int marques);
 
 /**
+ * @brief  Vote la variante d'une occurrence du mot d'un bigramme dans le
+ *         contexte du mot qui precede ce bigramme : pour "t u v", le
+ *         bigramme est (u, v) et mot_avant est t (0 si u commence la
+ *         phrase). Sans effet si l'occurrence vient d'un fichier sans
+ *         accent, qui ne renseigne pas sur les accents.
+ * @param  l          le lexique.
+ * @param  mot_avant  mot qui precede le premier mot du bigramme.
+ * @param  bigramme   le bigramme de l'occurrence.
+ * @param  graphie    graphie de l'occurrence.
+ * @param  accentue   true si l'occurrence vient d'un fichier qui contient
+ *                    des accents.
+ * @pre    l != NULL ; !finalise(l) ; mot_avant < nb_mots(l) ;
+ *         bigramme < nb_bigrammes(l) ; graphie != NULL ; valide(graphie) ;
+ *         minuscules(graphie) est une variante de mot(l, bigramme) (deja
+ *         observee, cf. lexique_observer).
+ * @post   en cas de succes, si accentue, le vote du contexte
+ *         (mot_avant, bigramme) est mis a jour. En cas d'echec : les choix
+ *         du lexique sont inchanges.
+ * @return true en cas de succes, false si la memoire manque
+ *         (errno == ENOMEM).
+ * @note   Complexite : O(nombre de variantes du mot * longueur) en
+ *         moyenne.
+ */
+bool lexique_observer_contexte(lexique_t *l, unsigned int mot_avant,
+                               unsigned int bigramme, const char *graphie, bool accentue);
+
+/**
  * @brief  Termine l'apprentissage : calcule les choix d'affichage de chaque
- *         mot et de chaque bigramme a partir des votes.
+ *         mot, de chaque bigramme et de chaque contexte a partir des votes.
  * @pre    l != NULL ; !finalise(l).
  * @post   finalise(l) ; chaque mot qui a au moins une variante a une
- *         variante choisie ; les variantes et les nombres de mots et de
- *         bigrammes sont inchanges. Ne peut pas echouer.
- * @note   Complexite : O(nb_mots + nombre de variantes + nb_bigrammes).
+ *         variante choisie ; un contexte n'est une exception que si sa
+ *         variante differe de celle de son bigramme ; les variantes et les
+ *         nombres de mots, de bigrammes et de contextes sont inchanges. Ne
+ *         peut pas echouer.
+ * @note   Complexite : O(nb_mots + nombre de variantes + nb_bigrammes
+ *         + nb_contextes).
  */
 void lexique_finaliser(lexique_t *l);
 
@@ -346,6 +410,43 @@ liaison_t lexique_liaison(const lexique_t *l, unsigned int bigramme);
 unsigned int lexique_marques(const lexique_t *l, unsigned int bigramme);
 
 /**
+ * @brief  Nombre de contextes de deux mots enregistres (cf.
+ *         lexique_contexte).
+ * @pre    l != NULL.
+ * @note   Complexite : O(1).
+ */
+unsigned int lexique_nb_contextes(const lexique_t *l);
+
+/**
+ * @brief  Contexte de deux mots de rang donne.
+ * @param  l          le lexique.
+ * @param  rang       rang du contexte (0 .. nb_contextes(l) - 1).
+ * @param  mot_avant  recoit le mot qui precede le bigramme.
+ * @param  bigramme   recoit le bigramme.
+ * @pre    l != NULL ; finalise(l) ; rang < nb_contextes(l) ;
+ *         mot_avant != NULL ; bigramme != NULL.
+ * @return la variante choisie dans ce contexte, ou LEXIQUE_AUCUNE si ce
+ *         contexte n'est pas une exception (son choix est celui du
+ *         bigramme).
+ * @note   Complexite : O(1).
+ */
+unsigned int lexique_contexte(const lexique_t *l, unsigned int rang,
+                              unsigned int *mot_avant, unsigned int *bigramme);
+
+/**
+ * @brief  Variante choisie pour le mot d'un bigramme precede d'un mot
+ *         donne.
+ * @pre    l != NULL ; finalise(l) ; mot_avant < nb_mots(l) ;
+ *         bigramme < nb_bigrammes(l).
+ * @return la variante du contexte (mot_avant, bigramme) s'il est une
+ *         exception, LEXIQUE_AUCUNE sinon.
+ * @note   Complexite : O(1) en moyenne.
+ */
+unsigned int lexique_variante_contexte(const lexique_t *l,
+                                       unsigned int mot_avant,
+                                       unsigned int bigramme);
+
+/**
  * @brief  Ecrit la graphie d'affichage du mot d'un bigramme : variante et
  *         casse du bigramme si elles existent, sinon celles du mot ; en
  *         debut de phrase, la premiere lettre est mise en majuscule.
@@ -365,6 +466,26 @@ unsigned int lexique_marques(const lexique_t *l, unsigned int bigramme);
  */
 size_t lexique_ecrire(const lexique_t *l, unsigned int bigramme,
                       bool debut_phrase, char *tampon, size_t taille);
+
+/**
+ * @brief  Comme lexique_ecrire, mais la variante est d'abord celle du
+ *         contexte (mot_avant, bigramme) s'il est une exception.
+ * @param  l             le lexique.
+ * @param  mot_avant     mot qui precede le bigramme, ou LEXIQUE_AUCUNE
+ *                       (aucun contexte : equivaut a lexique_ecrire).
+ * @param  bigramme      le bigramme.
+ * @param  debut_phrase  true pour le premier mot d'une phrase.
+ * @param  tampon        destination (peut etre NULL si taille == 0).
+ * @param  taille        taille du tampon en octets.
+ * @pre    comme lexique_ecrire ; mot_avant == LEXIQUE_AUCUNE ou
+ *         mot_avant < nb_mots(l).
+ * @post   comme lexique_ecrire.
+ * @return la longueur en octets de la graphie (sans le '\0').
+ * @note   Complexite : O(longueur) en moyenne.
+ */
+size_t lexique_ecrire_contexte(const lexique_t *l, unsigned int mot_avant,
+                               unsigned int bigramme, bool debut_phrase,
+                               char *tampon, size_t taille);
 
 /**
  * @brief  Ecrit la graphie d'affichage d'un mot hors de tout contexte :
@@ -407,5 +528,21 @@ void lexique_fixer_mot(lexique_t *l, unsigned int mot, unsigned int variante, ca
 void lexique_fixer_bigramme(lexique_t *l, unsigned int bigramme,
                             unsigned int variante, unsigned int casse,
                             liaison_t liaison, unsigned int marques);
+
+/**
+ * @brief  Fixe la variante d'un contexte de deux mots (exception), apres la
+ *         finalisation (rechargement d'un modele sauvegarde).
+ * @pre    l != NULL ; finalise(l) ; mot_avant < nb_mots(l) ;
+ *         bigramme < nb_bigrammes(l) ;
+ *         variante < nb_variantes(l, mot(l, bigramme)).
+ * @post   en cas de succes,
+ *         lexique_variante_contexte(l, mot_avant, bigramme) == variante.
+ *         En cas d'echec : lexique inchange.
+ * @return true en cas de succes, false si la memoire manque
+ *         (errno == ENOMEM).
+ * @note   Complexite : O(1) en moyenne (amortie).
+ */
+bool lexique_fixer_contexte(lexique_t *l, unsigned int mot_avant,
+                            unsigned int bigramme, unsigned int variante);
 
 #endif

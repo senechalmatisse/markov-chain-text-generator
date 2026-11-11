@@ -9,24 +9,28 @@ construction d'une chaine de Markov a partir de ces fichiers.
 DEFINITION D'UN MOT
   Un mot est une suite maximale de lettres. Les lettres sont :
     - les lettres ASCII 'a' .. 'z' et 'A' .. 'Z' ;
-    - les lettres accentuees latines (fichiers en UTF-8, ou en Latin-1 :
-      un octet qui ne forme pas une sequence UTF-8 valide est lu comme un
-      caractere Latin-1).
+    - les lettres latines accentuees de Latin-1 et de Latin etendu A, et
+      les lettres roumaines a virgule (cf. lexique_est_lettre) : francais,
+      allemand, langues scandinaves, polonais, tcheque, hongrois, turc,
+      roumain, esperanto... Les fichiers sont en UTF-8, ou en Latin-1 : un
+      octet qui ne forme pas une sequence UTF-8 valide est lu comme un
+      caractere Latin-1.
   Les mots renvoyes sont en minuscules et sans accents :
     E -> e, e accent aigu -> e, c cedille -> c, oe lie -> oe, ae lie -> ae,
-    eszett -> ss, ...
+    eszett -> ss, l barre -> l, s cedille -> s, ...
   Ce sont donc des mots de l'alphabet {a, ..., z} (cf. hachage_mot_valide).
   Tout autre caractere (ponctuation, apostrophes, tirets, chiffres,
   espaces, symboles, guillemets, ...) separe les mots et est retire :
   "C'est-a-dire" donne les mots "c", "est", "a", "dire".
   L'iterateur conserve aussi, pour chaque mot, sa GRAPHIE d'origine (en
   UTF-8, avec ses accents et ses majuscules), le separateur qui le suit
-  (LIAISON), les MARQUES de dialogue qui le precedent et la PONCTUATION qui
-  termine sa phrase (cf. texte.h).
+  (LIAISON), les MARQUES qui le precedent et la PONCTUATION qui termine sa
+  phrase (cf. texte.h).
 
-GUILLEMETS ET TIRETS (marques de dialogue, cf. texte.h)
+MARQUES : GUILLEMETS, TIRETS ET PARENTHESES (cf. texte.h)
   Entre deux mots, ou devant le premier mot du fichier, l'iterateur
   reconnait :
+    - les parentheses et les crochets, ouvrants et fermants ;
     - les guillemets ouvrants : guillemet francais ouvrant (U+00AB) et
       guillemet allemand ouvrant (U+201E) ;
     - le guillemet fermant francais (U+00BB) ;
@@ -47,8 +51,12 @@ DEFINITION D'UNE FIN DE PHRASE
   Un mot termine une phrase s'il est suivi, avant le mot suivant :
     - d'un '.', d'un '!', d'un '?' ou d'un caractere points de suspension,
       SAUF pour un '.' place juste apres une initiale ou une abreviation
-      ("M. Dupont", "J.-J. Rousseau", "MM. Dupont") et pour un '.' place
-      entre deux chiffres ("3.5") ;
+      ("M. Dupont", "J.-J. Rousseau", "MM. Dupont"), pour un '.' place
+      entre deux chiffres ("3.5"), et si le mot suivant commence par une
+      minuscule : la ponctuation est alors interne a la phrase ("Ah! dit-il",
+      "Qui? demanda-t-il", "il hesita... puis", "etc. et") et devient la
+      liaison LIAISON_EXCLAMATION, LIAISON_INTERROGATION,
+      LIAISON_SUSPENSION ou LIAISON_ABREVIATION ;
     - ou d'une ligne vide (changement de paragraphe, de strophe, titre) ;
     - ou de la fin du fichier (le dernier mot d'un fichier termine toujours
       une phrase) ;
@@ -61,6 +69,13 @@ TEXTES DU PROJET GUTENBERG
   GUTENBERG ..."), la lecture commence apres elle ; elle s'arrete a la
   premiere ligne de fin ("*** END OF ... PROJECT GUTENBERG ...", "End of
   the Project Gutenberg EBook ..." ou "End of Project Gutenberg's ...").
+
+COURRIERS ELECTRONIQUES
+  Un fichier qui commence comme un courrier (un message ".eml" ou une
+  boite mbox : cf. mail_est_courrier) est remplace par le texte de ses
+  messages, sans en-tetes, citations ni signatures, decode et converti en
+  UTF-8 (cf. mail.h) : c'est ce texte que l'iterateur lit, chaque message
+  se terminant par une ligne vide.
 
 CHAINE DE MARKOV D'UN REPERTOIRE
   L'etat 0 (REPERTOIRE_DEBUT_PHRASE) correspond au mot vide "" et represente
@@ -130,9 +145,10 @@ a la paire d'identifiant i (ordre 2) ou au n-uplet d'identifiant i.
 typedef struct iterateur_mots_s iterateur_mots_t;
 
 /**
- * @brief  Cree un iterateur sur les mots d'un fichier texte.
- *         Le fichier est d'abord parcouru une fois pour reperer les
- *         marques du projet Gutenberg et savoir s'il contient des accents.
+ * @brief  Cree un iterateur sur les mots d'un fichier texte, ou du texte
+ *         des messages d'un courrier (cf. COURRIERS ELECTRONIQUES, en
+ *         tete de ce fichier). Le texte est d'abord parcouru une fois pour
+ *         reperer les marques du projet Gutenberg et savoir s'il contient des accents.
  * @param  chemin_fichier  chemin relatif ou absolu du fichier.
  * @pre    chemin_fichier != NULL.
  * @post   si le resultat est non NULL, il est positionne avant le premier
@@ -211,15 +227,17 @@ const char *iterateur_mots_graphie(const iterateur_mots_t *iterateur);
  *         renvoye un mot.
  * @return la liaison ; LIAISON_ESPACE si le mot termine sa phrase.
  *         Apostrophe ou trait d'union : seulement s'il s'agit du seul
- *         caractere entre les deux mots ("c'est", "dit-il") ; abreviation :
- *         "M. Dupont" ; sinon le signe le plus fort parmi ';' , ':' puis
- *         ',' ; sinon LIAISON_ESPACE.
+ *         caractere entre les deux mots ("c'est", "dit-il") ; ponctuation
+ *         interne (cf. DEFINITION D'UNE FIN DE PHRASE) : '?', '!', points
+ *         de suspension, ou point ("etc. et", comme "M. Dupont" :
+ *         LIAISON_ABREVIATION) ; sinon le signe le plus fort parmi ';' ,
+ *         ':' puis ',' ; sinon LIAISON_ESPACE.
  * @note   Complexite : O(1).
  */
 liaison_t iterateur_mots_liaison(const iterateur_mots_t *iterateur);
 
 /**
- * @brief  Marques de dialogue (guillemets, tirets) placees DEVANT le
+ * @brief  Marques (guillemets, tirets, parentheses) placees DEVANT le
  *         dernier mot renvoye : entre le mot precedent et lui (meme si une
  *         fin de phrase les separe), ou avant lui s'il est le premier mot
  *         du fichier.
@@ -227,8 +245,8 @@ liaison_t iterateur_mots_liaison(const iterateur_mots_t *iterateur);
  *         renvoye un mot.
  * @post   resultat <= MARQUES_TOUTES ; si le mot precedent lui est lie par
  *         une apostrophe ou un trait d'union, resultat == MARQUE_AUCUNE.
- * @return la combinaison (par |) de MARQUE_FERME_GUILLEMET, MARQUE_TIRET et
- *         MARQUE_OUVRE_GUILLEMET (cf. texte.h et l'en-tete de ce fichier).
+ * @return la combinaison (par |) des marques MARQUE_* (cf. texte.h et
+ *         l'en-tete de ce fichier).
  * @note   Complexite : O(1).
  */
 unsigned int iterateur_mots_marques(const iterateur_mots_t *iterateur);
@@ -256,6 +274,15 @@ ponctuation_t iterateur_mots_ponctuation(const iterateur_mots_t *iterateur);
  * @note   Complexite : O(1).
  */
 bool iterateur_mots_accentue(const iterateur_mots_t *iterateur);
+
+/**
+ * @brief  Nombre de messages du courrier lu (cf. COURRIERS ELECTRONIQUES).
+ * @pre    iterateur != NULL.
+ * @return 0 pour un fichier texte ordinaire ; sinon le nombre de messages
+ *         (1 pour un message seul, au moins 1 pour une boite mbox).
+ * @note   Complexite : O(1).
+ */
+size_t iterateur_mots_nb_messages(const iterateur_mots_t *iterateur);
 
 /**
  * @brief  Indique si une erreur s'est produite pendant la lecture.
@@ -360,6 +387,8 @@ void repertoire_liberer_fichiers(char ***fichiers, size_t nb_fichiers);
 /** Bilan d'un apprentissage (cf. repertoire_options_t). */
 typedef struct {
   size_t nb_fichiers;          /**< fichiers lus */
+  size_t nb_messages;          /**< messages des courriers lus (cf.
+                                    iterateur_mots_nb_messages) */
   size_t nb_phrases;           /**< phrases lues (ecartees comprises) */
   size_t nb_mots;              /**< mots lus (occurrences, ecartes compris) */
   size_t nb_phrases_ecartees;  /**< phrases ecartees par le filtre de langue */
@@ -370,8 +399,8 @@ typedef struct {
 
 /**
  * Options de repertoire_apprendre et de repertoire_apprendre_corpus. Les
- * options { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL }
- * demandent une chaine d'ordre 1 seule.
+ * options { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL, 0u,
+ * NULL, NULL } demandent une chaine d'ordre 1 seule.
  */
 typedef struct {
   unsigned int ordre;           /**< 1 : un etat = un mot ; 2 : une paire ;
@@ -393,6 +422,13 @@ typedef struct {
                                      dans la langue majoritaire */
   repertoire_bilan_t *bilan;    /**< NULL, ou structure qui recoit le bilan
                                      en cas de succes */
+  unsigned int ordre_repli;     /**< 0, ou ordre j < ordre de la chaine de
+                                     repli, apprise en meme temps */
+  markov_t *repli;              /**< chaine VIDE qui recoit la chaine de
+                                     repli si ordre_repli >= 1, NULL sinon */
+  hachage_nuplets_t *nuplets_repli; /**< table VIDE de n-uplets de taille
+                                     ordre_repli qui recoit les etats de
+                                     repli si ordre_repli >= 3, NULL sinon */
 } repertoire_options_t;
 
 /**
@@ -411,6 +447,10 @@ typedef struct {
  *         options->bigrammes != NULL si ordre == 2 ou lexique != NULL ;
  *         options->nuplets != NULL si et seulement si ordre >= 3, et alors
  *         hachage_nuplets_taille(options->nuplets) == ordre ;
+ *         ordre_repli < ordre ; options->repli != NULL si et seulement si
+ *         ordre_repli >= 1 ; options->bigrammes != NULL si
+ *         ordre_repli == 2 ; options->nuplets_repli != NULL si et
+ *         seulement si ordre_repli >= 3, et alors de taille ordre_repli ;
  *         chaque structure facultative fournie est vide (0 paire, 0
  *         n-uplet, 0 mot, 0 etat) et le lexique n'est pas finalise.
  * @post   en cas de succes, soit m le resultat et n = hachage_nb_mots(mots) :
@@ -420,23 +460,26 @@ typedef struct {
  *             l'etat i est la paire i ; la paire 0 est (0, 0) ;
  *             ordre k >= 3 : markov_nb_etats(m) == hachage_nuplets_nb(nuplets),
  *             l'etat i est le n-uplet i ; le n-uplet 0 est (0, ..., 0) ;
+ *           - repli (si ordre_repli >= 1) : finalisee, chaine d'ordre
+ *             ordre_repli apprise sur les memes phrases (memes regles :
+ *             etats = mots, paires ou n-uplets de nuplets_repli) ;
  *           - bigrammes (si fourni) : la paire 0 est (0, 0) ; il contient
  *             chaque (0, w1) de debut de phrase et chaque couple (u, v) de
  *             mots consecutifs d'une meme phrase, et seulement eux ;
  *           - lexique (si fourni) : finalise, n mots, un bigramme par paire
  *             (le bigramme i a pour mot le second element de la paire i) ;
- *             chaque mot i > 0 a une variante choisie ;
+ *             chaque mot i > 0 a une variante choisie ; pour chaque
+ *             occurrence "t u v" d'un fichier accentue (t == 0 si u commence
+ *             la phrase), la variante de v a vote dans le contexte (t, bigramme (u, v)) ;
  *           - ponctuation (si fournie) : finalisee, REPERTOIRE_NB_FINS + n
  *             etats ; le poids de (REPERTOIRE_NB_FINS + w) -> p est le
  *             nombre de phrases terminees par w avec la ponctuation p. Une
  *             fin sans ponctuation compte comme un point, sauf en lecture
- *             "une phrase par ligne" ou elle est comptee telle quelle
- *             (p == PONCTUATION_AUCUNE) ;
+ *             "une phrase par ligne" ou elle est comptee telle quelle (p == PONCTUATION_AUCUNE) ;
  *           - markov_nb_voisins(m, 0) == 0 si et seulement si aucun mot n'a
  *             ete appris ; tout etat i > 0 a au moins un voisin ; si un etat
  *             a pour voisin 0, son dernier mot a au moins un voisin dans la
- *             chaine de ponctuation ; tout mot i > 0 est le dernier mot
- *             d'au moins un etat ;
+ *             chaine de ponctuation ; tout mot i > 0 est le dernier mot d'au moins un etat ;
  *           - avec filtrer_langues, les phrases ecartees n'ont laisse
  *             aucune trace (ni mot, ni transition, ni graphie) ;
  *           - bilan (si fourni) : rempli ; nb_phrases_ecartees <= nb_phrases
@@ -470,8 +513,7 @@ markov_t *repertoire_apprendre_corpus(const char *const *chemins,
  * @param  graine             graine du generateur de la chaine.
  * @param  mots               table de hachage VIDE, creee par l'appelant.
  * @param  options            options (cf. repertoire_options_t).
- * @pre    chemin_repertoire != NULL ; pour le reste, cf.
- *         repertoire_apprendre_corpus.
+ * @pre    chemin_repertoire != NULL ; pour le reste, cf. repertoire_apprendre_corpus.
  * @post   cf. repertoire_apprendre_corpus.
  * @return la chaine (a liberer avec markov_detruire), ou NULL en cas
  *         d'echec (errno indique la cause, cf. repertoire_apprendre_corpus).
@@ -495,7 +537,6 @@ markov_t *repertoire_apprendre(const char *chemin_repertoire,
  * @return la chaine (a liberer avec markov_detruire), ou NULL en cas
  *         d'echec (errno indique la cause, cf. repertoire_apprendre_corpus).
  */
-markov_t *repertoire_creer_markov(const char *chemin_repertoire,
-                                  unsigned int graine, hachage_t *mots);
+markov_t *repertoire_creer_markov(const char *chemin_repertoire,unsigned int graine, hachage_t *mots);
 
 #endif

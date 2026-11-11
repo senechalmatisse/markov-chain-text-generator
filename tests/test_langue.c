@@ -13,7 +13,9 @@ l'alphabet {a, ..., z}) : un point termine une phrase.
 #include "../src/langue.h"
 #include "outils_tests.h"
 
-/* Textes courants d'au moins 80 mots, un par langue reconnue. */
+/* Textes courants, un par langue reconnue : d'au moins 80 mots pour les
+   sept premieres langues, de 59 a 76 mots pour les suivantes (ecrits en
+   UTF-8 avec leurs accents, puis lus par l'iterateur). */
 static const char *const TEXTE_FRANCAIS =
   "le chat dort sur le toit de la maison. il regarde les oiseaux qui "
   "passent dans le ciel. la petite fille ouvre la porte et appelle son "
@@ -70,6 +72,101 @@ static const char *const TEXTE_NEERLANDAIS =
   "bal voor de deur. wij hebben de hele dag op jullie gewacht maar jullie "
   "zijn niet gekomen. ik weet niet wat zij van mij wil. als de regen "
   "ophoudt gaan we door de stad lopen.";
+
+static const char *const TEXTE_LATIN =
+  "puer in horto ambulat et cum amicis suis ludit sed mater eum vocat "
+  "quia cena iam parata est. non est facile semper bene agere nam homines "
+  "saepe errant tamen qui laborat et sperat ad finem perveniet. ego te "
+  "video et tu me audis et nos omnes in hac urbe magna vivimus quae inter "
+  "montes et mare posita est. si vis pacem para bellum ut dicunt antiqui "
+  "sed ego pacem sine bello malo.";
+
+static const char *const TEXTE_CATALAN =
+  "el meu germa viu a barcelona amb la seva dona i els seus dos fills. "
+  "cada mati agafa el tren per anar a la feina pero a vegades prefereix "
+  "caminar perque li agrada molt passejar pel barri. quan arriba a casa "
+  "sopen tots junts i parlen del que han fet durant el dia. tambe els "
+  "agrada llegir llibres i escoltar musica abans d anar a dormir i els "
+  "caps de setmana sovint van a la muntanya.";
+
+static const char *const TEXTE_SUEDOIS =
+  "det var en gang en liten pojke som bodde i ett rott hus vid sjon. "
+  "varje morgon gick han ner till vattnet for att se pa faglarna och hans "
+  "hund foljde alltid med honom. han tyckte mycket om att fiska men han "
+  "hade inte sa mycket talamod. nar solen gick ner kom hans mor och "
+  "kallade pa honom och da sprang de hem tillsammans for att ata middag "
+  "med resten av familjen.";
+
+static const char *const TEXTE_DANOIS =
+  "der var engang en gammel mand som boede i et lille hus ved havet. hver "
+  "dag gik han ned til stranden for at se pa bolgerne og han havde altid "
+  "sin hund med sig. om aftenen sad han ved vinduet og laeste i en bog "
+  "mens hans kone lavede mad. de havde ikke mange penge men de var glade "
+  "og deres born kom ofte og besogte dem om sondagen nar vejret var godt.";
+
+static const char *const TEXTE_NORVEGIEN =
+  "det var en gang en gammel mann som bodde i et lite hus ved sjoen. hver "
+  "dag gikk han ned til stranden for a se pa bolgene og han hadde alltid "
+  "hunden sin med seg. om kvelden satt han ved vinduet og leste i en bok "
+  "mens kona hans laget middag. de hadde ikke mye penger men de var glade "
+  "og barna deres kom ofte for a besoke dem pa sondager nar vaeret var "
+  "fint.";
+
+static const char *const TEXTE_FINNOIS =
+  "olipa kerran pieni tytto joka asui metsan laidalla punaisessa talossa. "
+  "joka aamu han meni jarvelle katsomaan lintuja ja hanen koiransa "
+  "seurasi hanta aina. han piti kovasti kalastamisesta mutta hanella ei "
+  "ollut paljon karsivallisyytta. kun aurinko laski aiti kutsui hanet "
+  "kotiin ja sitten he soivat yhdessa illallista. illalla isa luki heille "
+  "kirjaa ja lapset kuuntelivat hiljaa ennen kuin menivat nukkumaan.";
+
+static const char *const TEXTE_POLONAIS =
+  "pewnego dnia maly chlopiec poszedl do lasu zeby zbierac grzyby. jego "
+  "matka powiedziala mu ze nie moze wracac zbyt pozno bo wieczorem robi "
+  "sie zimno. chlopiec szedl dlugo miedzy drzewami i nagle zobaczyl "
+  "starego czlowieka ktory siedzial pod debem. starzec usmiechnal sie do "
+  "niego i zapytal czy szuka czegos. chlopiec odpowiedzial ze tak ale "
+  "jeszcze nic nie znalazl wiec starzec pokazal mu droge.";
+
+static const char *const TEXTE_TCHEQUE =
+  "jednoho dne sel maly chlapec do lesa aby sbiral houby. jeho matka mu "
+  "rekla ze se nesmi vracet prilis pozde protoze vecer je zima. chlapec "
+  "sel dlouho mezi stromy a najednou uvidel stareho muze ktery sedel pod "
+  "dubem. starec se na nej usmal a zeptal se ho jestli neco hleda. "
+  "chlapec odpovedel ze ano ale jeste nic nenasel a tak mu starec ukazal "
+  "cestu k velke louce.";
+
+static const char *const TEXTE_HONGROIS =
+  "egyszer volt hol nem volt elt egy oreg halasz a tenger partjan. minden "
+  "reggel kiment a csonakjaval es csak este tert haza. a felesege mindig "
+  "varta ot a kis hazban ahol egyutt laktak mar nagyon regota. egy napon "
+  "a halasz egy kulonos aranyhalat fogott amely emberi hangon szolalt meg "
+  "es azt kerte hogy engedje szabadon. az oreg megsajnalta es visszadobta "
+  "a vizbe mert jo szive volt.";
+
+static const char *const TEXTE_ROUMAIN =
+  "a fost odata un baiat care locuia intr un sat mic langa un rau mare. "
+  "in fiecare dimineata mergea la scoala cu prietenii lui si se intorcea "
+  "acasa dupa amiaza. ii placea foarte mult sa citeasca si sa asculte "
+  "povestile bunicului care stia multe lucruri despre lume. cand se facea "
+  "seara toata familia se aduna in jurul mesei si vorbeau despre ce s a "
+  "intamplat in timpul zilei.";
+
+static const char *const TEXTE_TURC =
+  "bir zamanlar kucuk bir koyde yasli bir adam yasardi. her sabah "
+  "erkenden kalkar bahcesine gider ve agaclarina su verirdi. koyun "
+  "cocuklari onu cok severdi cunku ona ne zaman gitseler onlara guzel "
+  "hikayeler anlatirdi. bir gun cocuklardan biri ona neden bu kadar mutlu "
+  "oldugunu sordu. yasli adam gulumsedi ve hayatin kucuk seylerde sakli "
+  "oldugunu bunu anlamak icin sabirli olmak gerektigini soyledi.";
+
+static const char *const TEXTE_ESPERANTO =
+  "iam estis knabo kiu logis en malgranda domo apud la arbaro. ciun "
+  "matenon li iris al la lago por rigardi la birdojn kaj lia hundo ciam "
+  "akompanis lin. li tre satis fiskapti sed li ne havis multe da "
+  "pacienco. kiam la suno subiris lia patrino vokis lin hejmen kaj tiam "
+  "ili kune mangis la vespermangon kun la tuta familio. poste la patro "
+  "legis al ili libron antau ol ili iris dormi.";
 
 
 /* ======================================================================== */
@@ -150,6 +247,8 @@ static void test_nom_des_langues(void)
   assert(strcmp(langue_nom(LANGUE_FRANCAIS), "francais") == 0);
   assert(strcmp(langue_nom(LANGUE_ANGLAIS), "anglais") == 0);
   assert(strcmp(langue_nom(LANGUE_NEERLANDAIS), "neerlandais") == 0);
+  assert(strcmp(langue_nom(LANGUE_LATIN), "latin") == 0);
+  assert(strcmp(langue_nom(LANGUE_ESPERANTO), "esperanto") == 0);
   /* noms non vides et tous differents */
   for (a = 0u; a < (unsigned int)NB_LANGUES; a++) {
     assert(langue_nom((langue_t)a)[0] != '\0');
@@ -168,20 +267,49 @@ static void test_profils(void)
   const unsigned int it = 1u << LANGUE_ITALIEN;
   const unsigned int pt = 1u << LANGUE_PORTUGAIS;
   const unsigned int nl = 1u << LANGUE_NEERLANDAIS;
+  const unsigned int la = 1u << LANGUE_LATIN;
+  const unsigned int ca = 1u << LANGUE_CATALAN;
+  const unsigned int sv = 1u << LANGUE_SUEDOIS;
+  const unsigned int da = 1u << LANGUE_DANOIS;
+  const unsigned int no = 1u << LANGUE_NORVEGIEN;
+  const unsigned int fi = 1u << LANGUE_FINNOIS;
+  const unsigned int pl = 1u << LANGUE_POLONAIS;
+  const unsigned int cs = 1u << LANGUE_TCHEQUE;
+  const unsigned int hu = 1u << LANGUE_HONGROIS;
+  const unsigned int ro = 1u << LANGUE_ROUMAIN;
+  const unsigned int tr = 1u << LANGUE_TURC;
+  const unsigned int eo = 1u << LANGUE_ESPERANTO;
 
   /* mots propres a une langue */
   assert(langue_profils("avec") == fr);
   assert(langue_profils("the") == en);
-  assert(langue_profils("pero") == es);
+  assert(langue_profils("hasta") == es);
+  assert(langue_profils("pero") == (es | ca));
   assert(langue_profils("nicht") == de);
   assert(langue_profils("gli") == it);
   assert(langue_profils("nao") == pt);
   assert(langue_profils("het") == nl);
-  /* mots communs a plusieurs langues */
-  assert(langue_profils("la") == (fr | es | it));
-  assert(langue_profils("que") == (fr | es | pt));
+  assert(langue_profils("quod") == la);
+  assert(langue_profils("aquest") == ca);
+  assert(langue_profils("och") == sv);
+  assert(langue_profils("af") == da);
+  assert(langue_profils("hadde") == no);
+  assert(langue_profils("etta") == fi);
+  assert(langue_profils("nie") == pl);
+  assert(langue_profils("jsem") == cs);
+  assert(langue_profils("hogy") == hu);
+  assert(langue_profils("pentru") == ro);
+  assert(langue_profils("bir") == tr);
+  assert(langue_profils("kaj") == eo);
+  /* mots communs a plusieurs langues (ecrits sans accents : "pa" est le
+     "pa" scandinave, avec un a rond) */
+  assert(langue_profils("la") == (fr | es | it | ca | ro | eo));
+  assert(langue_profils("que") == (fr | es | pt | ca));
   assert(langue_profils("die") == (de | nl));
-  assert(langue_profils("in") == (en | de | it | nl));
+  assert(langue_profils("in") == (en | de | it | nl | la | sv | ro));
+  assert(langue_profils("ikke") == (da | no));
+  assert(langue_profils("pa") == (sv | da | no));
+  assert(langue_profils("ze") == (nl | pl | cs));
   /* premier et dernier mots de la table, mots elides */
   assert((langue_profils("a") & fr) != 0u);
   assert(langue_profils("zur") == de);
@@ -230,6 +358,72 @@ static void test_chaque_langue(void)
   assert(langue_du_texte(TEXTE_ITALIEN) == LANGUE_ITALIEN);
   assert(langue_du_texte(TEXTE_PORTUGAIS) == LANGUE_PORTUGAIS);
   assert(langue_du_texte(TEXTE_NEERLANDAIS) == LANGUE_NEERLANDAIS);
+  assert(langue_du_texte(TEXTE_LATIN) == LANGUE_LATIN);
+  assert(langue_du_texte(TEXTE_CATALAN) == LANGUE_CATALAN);
+  assert(langue_du_texte(TEXTE_SUEDOIS) == LANGUE_SUEDOIS);
+  assert(langue_du_texte(TEXTE_DANOIS) == LANGUE_DANOIS);
+  assert(langue_du_texte(TEXTE_NORVEGIEN) == LANGUE_NORVEGIEN);
+  assert(langue_du_texte(TEXTE_FINNOIS) == LANGUE_FINNOIS);
+  assert(langue_du_texte(TEXTE_POLONAIS) == LANGUE_POLONAIS);
+  assert(langue_du_texte(TEXTE_TCHEQUE) == LANGUE_TCHEQUE);
+  assert(langue_du_texte(TEXTE_HONGROIS) == LANGUE_HONGROIS);
+  assert(langue_du_texte(TEXTE_ROUMAIN) == LANGUE_ROUMAIN);
+  assert(langue_du_texte(TEXTE_TURC) == LANGUE_TURC);
+  assert(langue_du_texte(TEXTE_ESPERANTO) == LANGUE_ESPERANTO);
+}
+
+/**
+ * Corpus de trois textes dans une langue et d'un texte dans une autre :
+ * verifie la langue majoritaire, qu'aucune phrase des trois textes n'est
+ * ecartee et que le texte etranger l'est en entier (ou au moins pour
+ * moitie si partiel : la fin d'un texte dans une langue proche contient
+ * parfois trop peu de mots qui la distinguent).
+ */
+static void verifier_texte_etranger(const char *texte, langue_t langue,
+                                    const char *etranger, bool partiel)
+{
+  langue_detecteur_t *d = langue_detecteur_creer();
+  size_t avant;
+  size_t mots_etrangers;
+  unsigned int i;
+
+  for (i = 0u; i < 2u; i++) {
+    ajouter_texte(d, texte);
+    langue_detecteur_fin_texte(d);
+  }
+  avant = langue_detecteur_nb_phrases(d);
+  mots_etrangers = ajouter_texte(d, etranger);
+  langue_detecteur_fin_texte(d);
+  ajouter_texte(d, texte);
+  assert(langue_detecteur_conclure(d));
+  assert(langue_detecteur_majoritaire(d) == langue);
+  assert(nb_gardees(d, 0u, avant) == avant);
+  assert(langue_detecteur_nb_mots_ecartes(d) <= mots_etrangers);
+  assert(langue_detecteur_nb_mots_ecartes(d) >= (partiel ? mots_etrangers / 2u : mots_etrangers));
+  langue_detecteur_detruire(&d);
+}
+
+static void test_langues_proches(void)
+{
+  /* danois et norvegien, espagnol et catalan, polonais et tcheque : les
+     mots qu'elles ne partagent pas les distinguent */
+  verifier_texte_etranger(TEXTE_NORVEGIEN, LANGUE_NORVEGIEN, TEXTE_DANOIS, true);
+  verifier_texte_etranger(TEXTE_DANOIS, LANGUE_DANOIS, TEXTE_NORVEGIEN, true);
+  verifier_texte_etranger(TEXTE_SUEDOIS, LANGUE_SUEDOIS, TEXTE_DANOIS, true);
+  verifier_texte_etranger(TEXTE_ESPAGNOL, LANGUE_ESPAGNOL, TEXTE_CATALAN, false);
+  verifier_texte_etranger(TEXTE_CATALAN, LANGUE_CATALAN, TEXTE_ESPAGNOL, false);
+  verifier_texte_etranger(TEXTE_POLONAIS, LANGUE_POLONAIS, TEXTE_TCHEQUE, false);
+  verifier_texte_etranger(TEXTE_TCHEQUE, LANGUE_TCHEQUE, TEXTE_POLONAIS, false);
+  /* un texte dans chacune des nouvelles langues est ecarte d'un corpus francais, et inversement */
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_LATIN, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_CATALAN, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_FINNOIS, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_HONGROIS, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_ROUMAIN, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_TURC, false);
+  verifier_texte_etranger(TEXTE_FRANCAIS, LANGUE_FRANCAIS, TEXTE_ESPERANTO, false);
+  verifier_texte_etranger(TEXTE_LATIN, LANGUE_LATIN, TEXTE_FRANCAIS, false);
+  verifier_texte_etranger(TEXTE_HONGROIS, LANGUE_HONGROIS, TEXTE_ANGLAIS, false);
 }
 
 static void test_langue_inconnue(void)
@@ -283,8 +477,7 @@ static void test_texte_etranger_ecarte(void)
   assert(langue_detecteur_majoritaire(d) == LANGUE_FRANCAIS);
   assert(nb_gardees(d, 0u, phrases_francaises) == phrases_francaises);
   assert(nb_gardees(d, phrases_francaises, phrases_francaises + phrases_anglaises) == 0u);
-  assert(nb_gardees(d, phrases_francaises + phrases_anglaises,
-                    langue_detecteur_nb_phrases(d))
+  assert(nb_gardees(d, phrases_francaises + phrases_anglaises, langue_detecteur_nb_phrases(d))
          == langue_detecteur_nb_phrases(d) - phrases_francaises - phrases_anglaises);
   assert(langue_detecteur_nb_phrases_ecartees(d) == phrases_anglaises);
   assert(langue_detecteur_nb_mots_ecartes(d) == mots_anglais);
@@ -585,6 +778,7 @@ int main(void)
   LANCER_TEST(test_profils);
   LANCER_TEST(test_detecteur_vide);
   LANCER_TEST(test_chaque_langue);
+  LANCER_TEST(test_langues_proches);
   LANCER_TEST(test_langue_inconnue);
   LANCER_TEST(test_texte_etranger_ecarte);
   LANCER_TEST(test_langue_majoritaire_anglaise);

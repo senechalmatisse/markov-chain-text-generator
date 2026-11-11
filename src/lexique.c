@@ -10,7 +10,11 @@ Representation :
     fichiers accentues et de fichiers sans accent ; votes de casse ; choix ;
   - bigrammes[id] : mot du bigramme et trois votes de Boyer et Moore
     (candidat + compteur) pour la variante, la casse et le separateur
-    (liaison et marques de dialogue, ranges dans un seul octet) ;
+    (liaison et marques, rangees dans un entier de 16 bits) ;
+  - contextes : table des paires (mot avant, bigramme), creee au premier
+    contexte observe, et contextes_votes[id] : vote de Boyer et Moore de la
+    variante dans ce contexte (apres la finalisation : la variante si le
+    contexte est une exception, LEXIQUE_AUCUNE sinon) ;
   - un tampon de travail pour mettre une graphie en minuscules.
 
 Vote de Boyer et Moore : on garde un candidat et un compteur. Une voix pour
@@ -23,6 +27,7 @@ c'est le candidat final ; sinon le candidat est une valeur souvent votee.
 #include <stdint.h>
 #include <errno.h>
 #include "contrat.h"
+#include "hachage.h"
 #include "lexique.h"
 
 /** Capacite initiale des tableaux de mots et de bigrammes. */
@@ -62,11 +67,17 @@ typedef struct {
   unsigned int voix_variante;
   unsigned int voix_casse;
   unsigned int voix_separateur;
-  unsigned char casse;         /* candidat, ou CASSE_SANS_VOTE */
-  unsigned char separateur;    /* candidat : liaison + NB_LIAISONS * marques
-                                  (0, soit LIAISON_ESPACE sans marque, en
+  unsigned short separateur;   /* candidat : liaison + 16 * marques (0,
+                                  soit LIAISON_ESPACE sans marque, en
                                   l'absence de vote) */
+  unsigned char casse;         /* candidat, ou CASSE_SANS_VOTE */
 } bigramme_t;
+
+/** Contexte de deux mots : vote de Boyer et Moore de la variante. */
+typedef struct {
+  unsigned int variante;       /* candidat, ou LEXIQUE_AUCUNE */
+  unsigned int voix;
+} contexte_t;
 
 /** Bloc de stockage des variantes (membre tableau flexible C99). */
 typedef struct bloc_s {
@@ -83,6 +94,9 @@ struct lexique_s {
   bigramme_t *bigrammes;
   unsigned int nb_bigrammes;
   unsigned int capacite_bigrammes;
+  hachage_paires_t *contextes;   /* NULL tant qu'aucun contexte */
+  contexte_t *contextes_votes;
+  unsigned int capacite_contextes;
   bloc_t *blocs;
   char *tampon;               /* tampon de travail (minuscules) */
   size_t capacite_tampon;
@@ -94,13 +108,34 @@ struct lexique_s {
 /*                          Lettres UTF-8 reconnues                         */
 /* ======================================================================== */
 
-/** Lettre non ASCII reconnue (Latin-1, OE lies, Y trema majuscule). */
-static bool est_lettre_etendue(unsigned int point_code)
+/** Lettre non ASCII reconnue : Latin-1, Latin etendu A, lettres roumaines
+    a virgule. */
+static bool est_lettre_etendue(unsigned long point_code)
 {
-  return (point_code >= 0xC0u && point_code <= 0xFFu
+  return (point_code >= 0xC0u && point_code <= 0x17Fu
           && point_code != 0xD7u && point_code != 0xF7u)
-         || point_code == 0x152u || point_code == 0x153u
-         || point_code == 0x178u;
+         || (point_code >= 0x218u && point_code <= 0x21Bu);
+}
+
+/**
+ * Lettre de Latin etendu A ou roumaine qui a une majuscule et une
+ * minuscule de meme taille : renvoie +1 pour une majuscule, -1 pour une
+ * minuscule, 0 pour une lettre sans casse (ou hors de ces plages). Dans
+ * Latin etendu A, majuscules et minuscules alternent : majuscule au rang
+ * pair de U+0100 a U+0137 et de U+014A a U+0177, au rang impair de U+0139
+ * a U+0148 et de U+0179 a U+017E.
+ */
+static int casse_etendue(unsigned long c)
+{
+  int sens = 0;
+
+  if ((c >= 0x100u && c <= 0x137u && c != 0x130u && c != 0x131u)
+      || (c >= 0x14Au && c <= 0x177u) || (c >= 0x218u && c <= 0x21Bu)) {
+    sens = (c % 2u == 0u) ? 1 : -1;
+  } else if ((c >= 0x139u && c <= 0x148u) || (c >= 0x179u && c <= 0x17Eu)) {
+    sens = (c % 2u == 1u) ? 1 : -1;
+  }
+  return sens;
 }
 
 /**
@@ -150,7 +185,7 @@ static bool est_majuscule(unsigned int point_code)
   return (point_code >= 'A' && point_code <= 'Z')
          || (point_code >= 0xC0u && point_code <= 0xDEu
              && point_code != 0xD7u)
-         || point_code == 0x152u || point_code == 0x178u;
+         || point_code == 0x178u || casse_etendue(point_code) > 0;
 }
 
 static unsigned int en_minuscule(unsigned int point_code)
@@ -162,10 +197,10 @@ static unsigned int en_minuscule(unsigned int point_code)
   } else if (point_code >= 0xC0u && point_code <= 0xDEu
              && point_code != 0xD7u) {
     resultat = point_code + 0x20u;
-  } else if (point_code == 0x152u) {
-    resultat = 0x153u;
   } else if (point_code == 0x178u) {
     resultat = 0xFFu;
+  } else if (casse_etendue(point_code) > 0) {
+    resultat = point_code + 1u;
   }
   return resultat;
 }
@@ -179,13 +214,32 @@ static unsigned int en_majuscule(unsigned int point_code)
   } else if (point_code >= 0xE0u && point_code <= 0xFEu
              && point_code != 0xF7u) {
     resultat = point_code - 0x20u;
-  } else if (point_code == 0x153u) {
-    resultat = 0x152u;
   } else if (point_code == 0xFFu) {
     resultat = 0x178u;
+  } else if (casse_etendue(point_code) < 0) {
+    resultat = point_code - 1u;
   }
-  /* l'eszett (U+00DF) n'a pas de majuscule d'un seul caractere */
+  /* sans casse (meme taille impossible) : eszett (U+00DF), i turcs
+     (U+0130, U+0131), kra (U+0138), n apostrophe (U+0149), s long (U+017F) */
   return resultat;
+}
+
+bool lexique_est_lettre(unsigned long point_code)
+{
+  return (point_code >= 'a' && point_code <= 'z')
+         || (point_code >= 'A' && point_code <= 'Z')
+         || est_lettre_etendue(point_code);
+}
+
+bool lexique_est_majuscule(unsigned long point_code)
+{
+  bool majuscule = false;
+
+  if (lexique_est_lettre(point_code)) {
+    majuscule = est_majuscule((unsigned int)point_code);
+  }
+  POSTCONDITION(!majuscule || lexique_est_lettre(point_code));
+  return majuscule;
 }
 
 bool lexique_graphie_valide(const char *graphie)
@@ -239,8 +293,7 @@ casse_t lexique_casse(const char *graphie)
     }
   }
   if (premiere_majuscule) {
-    casse = (nb_lettres >= 2u && nb_majuscules == nb_lettres)
-            ? CASSE_MAJUSCULE : CASSE_CAPITALE;
+    casse = (nb_lettres >= 2u && nb_majuscules == nb_lettres) ? CASSE_MAJUSCULE : CASSE_CAPITALE;
   }
   return casse;
 }
@@ -314,8 +367,7 @@ static char *stocker(lexique_t *l, const char *texte)
  * Garantit la place d'un element de plus dans un tableau dynamique
  * (doublement). Renvoie false si la memoire manque (tableau inchange).
  */
-static bool reserver(void **tableau, unsigned int nb, unsigned int *capacite,
-                     size_t taille_element)
+static bool reserver(void **tableau, unsigned int nb, unsigned int *capacite, size_t taille_element)
 {
   size_t nouvelle_capacite;
   void *agrandi;
@@ -342,8 +394,7 @@ static bool reserver(void **tableau, unsigned int nb, unsigned int *capacite,
 }
 
 /** Vote de Boyer et Moore pour une valeur entiere. */
-static void voter(unsigned int *candidat, unsigned int *voix,
-                  unsigned int valeur)
+static void voter(unsigned int *candidat, unsigned int *voix, unsigned int valeur)
 {
   if (*voix == 0u) {
     *candidat = valeur;
@@ -366,10 +417,26 @@ static void voter_octet(unsigned char *candidat, unsigned int *voix, unsigned ch
   *candidat = (unsigned char)candidat_entier;
 }
 
-/** Range une liaison et des marques de dialogue dans un octet. */
-static unsigned char code_separateur(liaison_t liaison, unsigned int marques)
+/** Vote de Boyer et Moore pour un candidat de 16 bits. */
+static void voter_court(unsigned short *candidat, unsigned int *voix, unsigned short valeur)
 {
-  return (unsigned char)((unsigned int)liaison + ((unsigned int)NB_LIAISONS * marques));
+  unsigned int candidat_entier = *candidat;
+
+  voter(&candidat_entier, voix, valeur);
+  *candidat = (unsigned short)candidat_entier;
+}
+
+/** Nombre de valeurs reservees a la liaison dans le code d'un separateur
+    (NB_LIAISONS <= BASE_SEPARATEUR). */
+#define BASE_SEPARATEUR 16u
+
+/** Verification a la compilation : toute liaison tient dans la base. */
+typedef char verification_base_separateur[(NB_LIAISONS <= BASE_SEPARATEUR) ? 1 : -1];
+
+/** Range une liaison et des marques dans un entier de 16 bits. */
+static unsigned short code_separateur(liaison_t liaison, unsigned int marques)
+{
+  return (unsigned short)((unsigned int)liaison + (BASE_SEPARATEUR * marques));
 }
 
 /** Incremente un compteur sans depassement. */
@@ -398,6 +465,9 @@ lexique_t *lexique_creer(void)
     l->bigrammes = NULL;
     l->nb_bigrammes = 0u;
     l->capacite_bigrammes = 0u;
+    l->contextes = NULL;
+    l->contextes_votes = NULL;
+    l->capacite_contextes = 0u;
     l->blocs = NULL;
     l->tampon = NULL;
     l->capacite_tampon = 0u;
@@ -419,6 +489,8 @@ void lexique_detruire(lexique_t **l)
     }
     free((*l)->mots);
     free((*l)->bigrammes);
+    hachage_paires_detruire(&(*l)->contextes);
+    free((*l)->contextes_votes);
     bloc = (*l)->blocs;
     while (bloc != NULL) {
       precedent = bloc->precedent;
@@ -527,9 +599,7 @@ unsigned int lexique_ajouter_variante(lexique_t *l, unsigned int mot, const char
   } else {
     /* 1. place dans le tableau des variantes */
     if (m->nb_variantes == m->capacite) {
-      nouvelle_capacite = (m->capacite == 0u)
-                          ? CAPACITE_VARIANTES_INITIALE
-                          : 2u * (size_t)m->capacite;
+      nouvelle_capacite = (m->capacite == 0u) ? CAPACITE_VARIANTES_INITIALE : 2u * (size_t)m->capacite;
       if (nouvelle_capacite > LEXIQUE_NB_MAX) {
         nouvelle_capacite = LEXIQUE_NB_MAX;
       }
@@ -570,29 +640,16 @@ bool lexique_separateur_valide(liaison_t liaison, unsigned int marques)
                  && liaison != LIAISON_TRAIT_UNION));
 }
 
-bool lexique_observer(lexique_t *l, unsigned int bigramme,
-                      const char *graphie, bool accentue, bool debut_phrase,
-                      liaison_t liaison, unsigned int marques)
+/**
+ * Recopie une graphie en minuscules dans le tampon de travail (agrandi si
+ * besoin). Renvoie false si la memoire manque (errno == ENOMEM).
+ */
+static bool mettre_en_minuscules(lexique_t *l, const char *graphie)
 {
-  bigramme_t *b;
-  mot_t *m;
-  variante_t *v;
-  size_t longueur;
+  size_t longueur = strlen(graphie);
   char *tampon;
-  unsigned int rang = LEXIQUE_ABSENT;
-  casse_t casse;
   bool succes = true;
 
-  PRECONDITION(l != NULL);
-  PRECONDITION(!l->finalise);
-  PRECONDITION(bigramme < l->nb_bigrammes);
-  PRECONDITION(graphie != NULL);
-  PRECONDITION(lexique_graphie_valide(graphie));
-  PRECONDITION(lexique_separateur_valide(liaison, marques));
-
-  b = &l->bigrammes[bigramme];
-  /* 1. variante = graphie en minuscules, dans le tampon de travail */
-  longueur = strlen(graphie);
   if (longueur + 1u > l->capacite_tampon) {
     tampon = realloc(l->tampon, longueur + 1u);
     if (tampon == NULL) {
@@ -606,6 +663,94 @@ bool lexique_observer(lexique_t *l, unsigned int bigramme,
   if (succes) {
     memcpy(l->tampon, graphie, longueur + 1u);
     lexique_appliquer_casse(l->tampon, CASSE_MINUSCULE);
+  }
+  return succes;
+}
+
+/** Rang d'une variante d'un mot, ou LEXIQUE_ABSENT. */
+static unsigned int rang_variante(const mot_t *m, const char *variante)
+{
+  unsigned int rang = 0u;
+
+  while (rang < m->nb_variantes && strcmp(m->variantes[rang].texte, variante) != 0) {
+    rang++;
+  }
+  return (rang < m->nb_variantes) ? rang : LEXIQUE_ABSENT;
+}
+
+/**
+ * Identifiant du contexte (mot_avant, bigramme), cree s'il est absent (avec
+ * un vote vide). La place d'un vote de plus est reservee avant l'insertion,
+ * qui se fait alors en une seule recherche dans la table. Renvoie
+ * LEXIQUE_ABSENT si la memoire manque (errno == ENOMEM) : les contextes
+ * existants sont alors inchanges.
+ */
+static unsigned int contexte(lexique_t *l, unsigned int mot_avant, unsigned int bigramme)
+{
+  contexte_t *votes;
+  unsigned int nb;
+  unsigned int identifiant = HACHAGE_ABSENT;
+  size_t capacite;
+
+  if (l->contextes == NULL) {
+    l->contextes = hachage_paires_creer(0u);
+  }
+  if (l->contextes != NULL) {
+    nb = hachage_paires_nb(l->contextes);
+    if (nb == l->capacite_contextes) {
+      capacite = (nb == 0u) ? (size_t)CAPACITE_INITIALE : 2u * (size_t)nb;
+      if (capacite > (size_t)LEXIQUE_NB_MAX) {
+        capacite = LEXIQUE_NB_MAX;
+      }
+      votes = (capacite > nb && capacite <= SIZE_MAX / sizeof(contexte_t))
+              ? realloc(l->contextes_votes, capacite * sizeof(contexte_t))
+              : NULL;
+      if (votes != NULL) {
+        l->contextes_votes = votes;
+        l->capacite_contextes = (unsigned int)capacite;
+      }
+    }
+    if (nb < l->capacite_contextes) {
+      identifiant = hachage_paires_ajouter(l->contextes, mot_avant, bigramme);
+      if (identifiant == nb) {
+        l->contextes_votes[identifiant].variante = LEXIQUE_AUCUNE;
+        l->contextes_votes[identifiant].voix = 0u;
+      }
+    } else {
+      /* pas de place pour un vote de plus : seul un contexte existant */
+      identifiant = hachage_paires_identifiant(l->contextes, mot_avant, bigramme);
+    }
+  }
+  if (identifiant == HACHAGE_ABSENT) {
+    identifiant = LEXIQUE_ABSENT;
+    errno = ENOMEM;
+  }
+  POSTCONDITION(identifiant == LEXIQUE_ABSENT || identifiant < l->capacite_contextes);
+  return identifiant;
+}
+
+bool lexique_observer(lexique_t *l, unsigned int bigramme,
+                      const char *graphie, bool accentue, bool debut_phrase,
+                      liaison_t liaison, unsigned int marques)
+{
+  bigramme_t *b;
+  mot_t *m;
+  variante_t *v;
+  unsigned int rang = LEXIQUE_ABSENT;
+  casse_t casse;
+  bool succes;
+
+  PRECONDITION(l != NULL);
+  PRECONDITION(!l->finalise);
+  PRECONDITION(bigramme < l->nb_bigrammes);
+  PRECONDITION(graphie != NULL);
+  PRECONDITION(lexique_graphie_valide(graphie));
+  PRECONDITION(lexique_separateur_valide(liaison, marques));
+
+  b = &l->bigrammes[bigramme];
+  /* 1. variante = graphie en minuscules, dans le tampon de travail */
+  succes = mettre_en_minuscules(l, graphie);
+  if (succes) {
     rang = lexique_ajouter_variante(l, b->mot, l->tampon);
     succes = (rang != LEXIQUE_ABSENT);
   }
@@ -621,23 +766,63 @@ bool lexique_observer(lexique_t *l, unsigned int bigramme,
       incrementer(&v->voix_autres);
     }
     if (debut_phrase) {
-      /* devant le premier mot d'une phrase : ni liaison ni guillemet
-         fermant (il appartient a la phrase precedente) */
+      /* devant le premier mot d'une phrase : ni liaison ni marque
+         fermante (elle appartient a la phrase precedente) */
       incrementer(&m->voix_casse_debut[casse]);
-      voter_octet(&b->separateur, &b->voix_separateur,
-                  code_separateur(LIAISON_ESPACE, marques
-                                  & ~(unsigned int)MARQUE_FERME_GUILLEMET));
+      voter_court(&b->separateur, &b->voix_separateur,
+                  code_separateur(LIAISON_ESPACE, marques & ~(unsigned int)MARQUES_FERMANTES));
     } else {
       incrementer(&m->voix_casse[casse]);
       voter_octet(&b->casse, &b->voix_casse, (unsigned char)casse);
-      voter_octet(&b->separateur, &b->voix_separateur, code_separateur(liaison, marques));
+      voter_court(&b->separateur, &b->voix_separateur,
+                  code_separateur(liaison, marques));
     }
   }
   return succes;
 }
 
+bool lexique_observer_contexte(lexique_t *l, unsigned int mot_avant,
+                               unsigned int bigramme, const char *graphie,
+                               bool accentue)
+{
+  unsigned int rang;
+  unsigned int identifiant;
+  bool succes = true;
+
+  PRECONDITION(l != NULL);
+  PRECONDITION(!l->finalise);
+  PRECONDITION(mot_avant < l->nb_mots);
+  PRECONDITION(bigramme < l->nb_bigrammes);
+  PRECONDITION(graphie != NULL);
+  PRECONDITION(lexique_graphie_valide(graphie));
+
+  if (accentue) {
+    succes = mettre_en_minuscules(l, graphie);
+    if (succes) {
+      rang = rang_variante(&l->mots[l->bigrammes[bigramme].mot], l->tampon);
+      PRECONDITION(rang != LEXIQUE_ABSENT);  /* variante deja observee */
+      identifiant = contexte(l, mot_avant, bigramme);
+      succes = (identifiant != LEXIQUE_ABSENT);
+      if (succes) {
+        voter(&l->contextes_votes[identifiant].variante,
+              &l->contextes_votes[identifiant].voix, rang);
+      }
+    }
+  }
+  return succes;
+}
+
+/** Variante d'un bigramme : son candidat, ou a defaut celle de son mot. */
+static unsigned int variante_bigramme(const lexique_t *l, unsigned int bigramme)
+{
+  const bigramme_t *b = &l->bigrammes[bigramme];
+
+  return (b->variante != LEXIQUE_AUCUNE) ? b->variante : l->mots[b->mot].variante_choisie;
+}
+
 void lexique_finaliser(lexique_t *l)
 {
+  unsigned int nb_contextes;
   unsigned int i;
   unsigned int r;
   mot_t *m;
@@ -683,7 +868,14 @@ void lexique_finaliser(lexique_t *l)
     }
     POSTCONDITION(m->nb_variantes == 0u || m->variante_choisie < m->nb_variantes);
   }
-  /* les candidats de Boyer et Moore des bigrammes sont deja les choix */
+  /* les candidats de Boyer et Moore des bigrammes sont deja les choix ;
+     un contexte n'est garde que s'il differe de son bigramme */
+  nb_contextes = lexique_nb_contextes(l);
+  for (i = 0u; i < nb_contextes; i++) {
+    if (l->contextes_votes[i].variante == variante_bigramme(l, hachage_paires_second(l->contextes, i))) {
+      l->contextes_votes[i].variante = LEXIQUE_AUCUNE;
+    }
+  }
   free(l->tampon);
   l->tampon = NULL;
   l->capacite_tampon = 0u;
@@ -776,7 +968,44 @@ liaison_t lexique_liaison(const lexique_t *l, unsigned int bigramme)
   PRECONDITION(l != NULL);
   PRECONDITION(l->finalise);
   PRECONDITION(bigramme < l->nb_bigrammes);
-  return (liaison_t)(l->bigrammes[bigramme].separateur % (unsigned int)NB_LIAISONS);
+  return (liaison_t)(l->bigrammes[bigramme].separateur % BASE_SEPARATEUR);
+}
+
+unsigned int lexique_nb_contextes(const lexique_t *l)
+{
+  PRECONDITION(l != NULL);
+  return (l->contextes == NULL) ? 0u : hachage_paires_nb(l->contextes);
+}
+
+unsigned int lexique_contexte(const lexique_t *l, unsigned int rang,
+                              unsigned int *mot_avant,
+                              unsigned int *bigramme)
+{
+  PRECONDITION(l != NULL);
+  PRECONDITION(l->finalise);
+  PRECONDITION(rang < lexique_nb_contextes(l));
+  PRECONDITION(mot_avant != NULL && bigramme != NULL);
+  *mot_avant = hachage_paires_premier(l->contextes, rang);
+  *bigramme = hachage_paires_second(l->contextes, rang);
+  return l->contextes_votes[rang].variante;
+}
+
+unsigned int lexique_variante_contexte(const lexique_t *l,
+                                       unsigned int mot_avant,
+                                       unsigned int bigramme)
+{
+  unsigned int identifiant = HACHAGE_ABSENT;
+
+  PRECONDITION(l != NULL);
+  PRECONDITION(l->finalise);
+  PRECONDITION(mot_avant < l->nb_mots);
+  PRECONDITION(bigramme < l->nb_bigrammes);
+  if (l->contextes != NULL) {
+    identifiant = hachage_paires_identifiant(l->contextes, mot_avant,
+                                             bigramme);
+  }
+  return (identifiant == HACHAGE_ABSENT)
+         ? LEXIQUE_AUCUNE : l->contextes_votes[identifiant].variante;
 }
 
 unsigned int lexique_marques(const lexique_t *l, unsigned int bigramme)
@@ -786,7 +1015,7 @@ unsigned int lexique_marques(const lexique_t *l, unsigned int bigramme)
   PRECONDITION(l != NULL);
   PRECONDITION(l->finalise);
   PRECONDITION(bigramme < l->nb_bigrammes);
-  marques = l->bigrammes[bigramme].separateur / (unsigned int)NB_LIAISONS;
+  marques = l->bigrammes[bigramme].separateur / BASE_SEPARATEUR;
   POSTCONDITION(lexique_separateur_valide(lexique_liaison(l, bigramme),
                                           marques));
   return marques;
@@ -828,6 +1057,34 @@ size_t lexique_ecrire(const lexique_t *l, unsigned int bigramme,
   b = &l->bigrammes[bigramme];
   m = &l->mots[b->mot];
   rang = (b->variante != LEXIQUE_AUCUNE) ? b->variante : m->variante_choisie;
+  casse = (b->casse != CASSE_SANS_VOTE) ? (casse_t)b->casse : m->casse_choisie;
+  return ecrire_variante(m->variantes[rang].texte, casse, debut_phrase, tampon, taille);
+}
+
+size_t lexique_ecrire_contexte(const lexique_t *l, unsigned int mot_avant,
+                               unsigned int bigramme, bool debut_phrase,
+                               char *tampon, size_t taille)
+{
+  const bigramme_t *b;
+  const mot_t *m;
+  unsigned int rang = LEXIQUE_AUCUNE;
+  casse_t casse;
+
+  PRECONDITION(l != NULL);
+  PRECONDITION(l->finalise);
+  PRECONDITION(bigramme < l->nb_bigrammes);
+  PRECONDITION(mot_avant == LEXIQUE_AUCUNE || mot_avant < l->nb_mots);
+  PRECONDITION(l->mots[l->bigrammes[bigramme].mot].variante_choisie != LEXIQUE_AUCUNE);
+  PRECONDITION(tampon != NULL || taille == 0u);
+
+  b = &l->bigrammes[bigramme];
+  m = &l->mots[b->mot];
+  if (mot_avant != LEXIQUE_AUCUNE) {
+    rang = lexique_variante_contexte(l, mot_avant, bigramme);
+  }
+  if (rang == LEXIQUE_AUCUNE) {
+    rang = variante_bigramme(l, bigramme);
+  }
   casse = (b->casse != CASSE_SANS_VOTE) ? (casse_t)b->casse : m->casse_choisie;
   return ecrire_variante(m->variantes[rang].texte, casse, debut_phrase, tampon, taille);
 }
@@ -882,4 +1139,23 @@ void lexique_fixer_bigramme(lexique_t *l, unsigned int bigramme,
   POSTCONDITION(lexique_casse_bigramme(l, bigramme) == casse);
   POSTCONDITION(lexique_liaison(l, bigramme) == liaison);
   POSTCONDITION(lexique_marques(l, bigramme) == marques);
+}
+
+bool lexique_fixer_contexte(lexique_t *l, unsigned int mot_avant,
+                            unsigned int bigramme, unsigned int variante)
+{
+  unsigned int identifiant;
+
+  PRECONDITION(l != NULL);
+  PRECONDITION(l->finalise);
+  PRECONDITION(mot_avant < l->nb_mots);
+  PRECONDITION(bigramme < l->nb_bigrammes);
+  PRECONDITION(variante < l->mots[l->bigrammes[bigramme].mot].nb_variantes);
+
+  identifiant = contexte(l, mot_avant, bigramme);
+  if (identifiant != LEXIQUE_ABSENT) {
+    l->contextes_votes[identifiant].variante = variante;
+  }
+  POSTCONDITION(identifiant == LEXIQUE_ABSENT || lexique_variante_contexte(l, mot_avant, bigramme) == variante);
+  return identifiant != LEXIQUE_ABSENT;
 }

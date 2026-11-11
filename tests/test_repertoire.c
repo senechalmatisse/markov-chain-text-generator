@@ -17,6 +17,7 @@ repertoires temporaires.
 #include <sys/stat.h>
 #include "outils_tests.h"
 #include "../src/repertoire.h"
+#include "../src/mail.h"
 
 /* ======================================================================== */
 /*                                 Utilitaires                              */
@@ -184,11 +185,13 @@ static void verifier_marques(const char *contenu, const marque_t *attendus, size
 /** Nombre d'elements d'un tableau. */
 #define NB(tableau) (sizeof(tableau) / sizeof((tableau)[0]))
 
-/* Abreviations des marques de dialogue. */
+/* Abreviations des marques. */
 #define AUCUNE MARQUE_AUCUNE
 #define FERME MARQUE_FERME_GUILLEMET
 #define TIRET MARQUE_TIRET
 #define OUVRE MARQUE_OUVRE_GUILLEMET
+#define OUVRE_P MARQUE_OUVRE_PARENTHESE
+#define FERME_P MARQUE_FERME_PARENTHESE
 
 /* Guillemets et tirets en UTF-8. */
 #define GO "\xC2\xAB"          /* guillemet francais ouvrant */
@@ -252,8 +255,7 @@ static void test_iterateur_accents_utf8(void)
                  "\xC5\x92uvre \xC3\x87" "A na\xC3\xAF" "f.",
                  "ete a l ecole oeuvre ca naif|");
   /* ligature ae, eszett, guillemets francais */
-  verifier_texte("c\xC3\xA6sar \xC2\xAB stra\xC3\x9F" "e \xC2\xBB",
-                 "caesar strasse|");
+  verifier_texte("c\xC3\xA6sar \xC2\xAB stra\xC3\x9F" "e \xC2\xBB", "caesar strasse|");
 }
 
 static void test_iterateur_latin1(void)
@@ -329,6 +331,186 @@ static void test_iterateur_points_de_suspension(void)
 {
   verifier_texte("Attends\xE2\x80\xA6 bon", "attends| bon|");
   verifier_texte("She's so...", "she s so|");
+  /* suivis d'une minuscule, ils restent dans la phrase */
+  verifier_texte("Attends\xE2\x80\xA6 bon", "attends bon|");
+}
+
+static void test_iterateur_ponctuation_interne(void)
+{
+  const lecture_t attendus[] = {
+    { "ah", "Ah", false, LIAISON_EXCLAMATION, PONCTUATION_AUCUNE },
+    { "dit", "dit", false, LIAISON_TRAIT_UNION, PONCTUATION_AUCUNE },
+    { "il", "il", true, LIAISON_ESPACE, PONCTUATION_POINT },
+    { "qui", "Qui", false, LIAISON_INTERROGATION, PONCTUATION_AUCUNE },
+    { "demanda", "demanda", false, LIAISON_TRAIT_UNION, PONCTUATION_AUCUNE },
+    { "t", "t", false, LIAISON_TRAIT_UNION, PONCTUATION_AUCUNE },
+    { "elle", "elle", true, LIAISON_ESPACE, PONCTUATION_POINT },
+    { "il", "Il", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "hesita", "h\xC3\xA9sita", false, LIAISON_SUSPENSION, PONCTUATION_AUCUNE },
+    { "puis", "puis", false, LIAISON_SUSPENSION, PONCTUATION_AUCUNE },
+    { "partit", "partit", true, LIAISON_ESPACE, PONCTUATION_POINT },
+    { "etc", "Etc", false, LIAISON_ABREVIATION, PONCTUATION_AUCUNE },
+    { "et", "et", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "la", "la", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "suite", "suite", false, LIAISON_EXCLAMATION, PONCTUATION_AUCUNE },
+    { "fin", "fin", true, LIAISON_ESPACE, PONCTUATION_EXCLAMATION },
+    { "mais", "mais", true, LIAISON_ESPACE, PONCTUATION_AUCUNE }
+  };
+  const marque_t citation[] = {
+    { "viens", OUVRE }, { "dit", FERME }, { "il", AUCUNE }
+  };
+  const lecture_t citation_details[] = {
+    { "viens", "Viens", false, LIAISON_EXCLAMATION, PONCTUATION_AUCUNE },
+    { "dit", "dit", false, LIAISON_TRAIT_UNION, PONCTUATION_AUCUNE },
+    { "il", "il", true, LIAISON_ESPACE, PONCTUATION_POINT }
+  };
+
+  /* ponctuation suivie d'une minuscule (meme a la ligne suivante) : la
+     phrase continue ; suivie d'une majuscule ou d'une ligne vide : elle
+     finit */
+  verifier_details("Ah! dit-il. Qui? demanda-t-elle. Il h\xC3\xA9sita... "
+                   "puis\xE2\x80\xA6 partit. Etc. et la suite!\nfin!\n\n"
+                   "mais", attendus, NB(attendus), true);
+  /* la citation se referme apres le point d'exclamation */
+  verifier_marques("\xC2\xABViens!\xC2\xBB dit-il.", citation, NB(citation));
+  verifier_details("\xC2\xABViens!\xC2\xBB dit-il.", citation_details, NB(citation_details), true);
+  /* "M. Dupont" et "3.5" sont inchanges ; "?!" donne une interrogation */
+  verifier_texte("Quoi?! non. M. Dupont a 3.5 ans", "quoi non| m dupont a ans|");
+}
+
+static void test_iterateur_parentheses(void)
+{
+  const marque_t parentheses[] = {
+    { "il", AUCUNE }, { "sortit", AUCUNE }, { "sans", OUVRE_P },
+    { "bruit", AUCUNE }, { "puis", FERME_P }, { "enfin", OUVRE_P }, { "revint", FERME_P }
+  };
+  const marque_t phrase_entre_parentheses[] = {
+    { "il", OUVRE_P }, { "sortit", AUCUNE }, { "puis", FERME_P }
+  };
+  const marque_t imbrication[] = {
+    { "il", AUCUNE }, { "dit", AUCUNE }, { "oui", OUVRE_P | OUVRE }, { "fin", FERME | FERME_P }
+  };
+  const lecture_t virgule[] = {
+    { "sans", "sans", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "bruit", "bruit", false, LIAISON_VIRGULE, PONCTUATION_AUCUNE },
+    { "puis", "puis", true, LIAISON_ESPACE, PONCTUATION_POINT }
+  };
+
+  verifier_marques("Il sortit (sans bruit), puis [enfin] revint.", parentheses, NB(parentheses));
+  /* apres la ponctuation finale, la parenthese fermante est rangee devant
+     le mot suivant (comme un guillemet) */
+  verifier_marques("(Il sortit.) Puis", phrase_entre_parentheses, NB(phrase_entre_parentheses));
+  verifier_marques("Il dit (\xC2\xABoui\xC2\xBB) fin", imbrication, NB(imbrication));
+  verifier_details("(sans bruit), puis.", virgule, NB(virgule), false);
+}
+
+static void test_iterateur_lettres_etendues(void)
+{
+  const lecture_t attendus[] = {
+    { "lodz", "\xC5\x81\xC3\xB3" "d\xC5\xBA", false, LIAISON_ESPACE,
+      PONCTUATION_AUCUNE },
+    { "sie", "si\xC4\x99", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "rec", "\xC5\x98" "E\xC4\x8C", false, LIAISON_ESPACE,
+      PONCTUATION_AUCUNE },
+    { "ilik", "\xC4\xB1l\xC4\xB1k", false, LIAISON_ESPACE,
+      PONCTUATION_AUCUNE },
+    { "istanbul", "\xC4\xB0stanbul", false, LIAISON_ESPACE,
+      PONCTUATION_AUCUNE },
+    { "stiinta", "\xC8\x98tiin\xC8\x9B\xC4\x83", false, LIAISON_ESPACE,
+      PONCTUATION_AUCUNE },
+    { "osz", "\xC5\x91sz", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "cu", "\xC4\x89u", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "ijs", "\xC4\xB3s", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "oeuvre", "\xC5\x93uvre", false, LIAISON_ESPACE, PONCTUATION_AUCUNE },
+    { "ls", "l\xC5\xBF", true, LIAISON_ESPACE, PONCTUATION_POINT }
+  };
+
+  /* polonais, tcheque, turc, roumain, hongrois, esperanto, neerlandais,
+     francais, s long */
+  verifier_details("\xC5\x81\xC3\xB3" "d\xC5\xBA si\xC4\x99 \xC5\x98" "E\xC4\x8C "
+                   "\xC4\xB1l\xC4\xB1k \xC4\xB0stanbul "
+                   "\xC8\x98tiin\xC8\x9B\xC4\x83 \xC5\x91sz \xC4\x89u "
+                   "\xC4\xB3s \xC5\x93uvre l\xC5\xBF.", attendus,
+                   NB(attendus), true);
+  /* un caractere hors de ces plages (U+0180) separe toujours les mots */
+  verifier_texte("ab\xC6\x80" "cd", "ab cd|");
+}
+
+/** Nombre de messages lus par l'iterateur dans un fichier de contenu
+    donne (et graphie du premier mot, si premier != NULL). */
+static size_t nb_messages_lus(const char *contenu, const char *premier)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *chemin = chemin_dans(repertoire, "courrier.eml");
+  iterateur_mots_t *it;
+  size_t nb;
+
+  ecrire_fichier(chemin, contenu);
+  it = iterateur_mots_creer(chemin);
+  assert(it != NULL);
+  nb = iterateur_mots_nb_messages(it);
+  if (premier != NULL) {
+    assert(iterateur_mots_suivant(it, NULL) != NULL);
+    assert(strcmp(iterateur_mots_graphie(it), premier) == 0);
+  }
+  iterateur_mots_detruire(&it);
+  free(chemin);
+  detruire_repertoire_temporaire(repertoire);
+  return nb;
+}
+
+static void test_iterateur_courrier(void)
+{
+  /* un message : seul le texte de l'expediteur est lu, decode */
+  verifier_texte("From: Jean <jean@example.com>\nTo: paul@example.com\n"
+                 "Subject: Rendez-vous\nContent-Type: text/plain; "
+                 "charset=iso-8859-1\nContent-Transfer-Encoding: "
+                 "quoted-printable\n\nRendez-vous =E0 midi.\n\n"
+                 "Le 3 mars, Paul a =E9crit :\n> Quand ?\n-- \nJean\n",
+                 "rendez vous a midi|");
+  assert(nb_messages_lus("From: a\nTo: b\n\nCaf\xC3\xA9 noir.\n", "Caf\xC3\xA9") == 1u);
+  /* boite mbox : la derniere phrase d'un message ne se poursuit pas dans le suivant */
+  verifier_texte("From jean@example.com Mon Mar  3 10:00:00 2024\n"
+                 "From: Jean\nTo: Paul\n\nBonjour Paul\n\n"
+                 "From paul@example.com Mon Mar  3 11:00:00 2024\n"
+                 "From: Paul\nTo: Jean\n\nSalut Jean\n",
+                 "bonjour paul| salut jean|");
+  assert(nb_messages_lus("From a Mon\nFrom: a\nTo: b\n\nUn.\n\n"
+                         "From b Tue\nFrom: b\nTo: a\n\nDeux.\n", "Un") == 2u);
+  /* courrier sans texte, texte ordinaire */
+  verifier_texte("From: a\nTo: b\nContent-Type: image/png\n\nxyz\n", "");
+  assert(nb_messages_lus("From: a\nTo: b\nContent-Type: image/png\n\n", NULL) == 1u);
+  assert(nb_messages_lus("Le chat dort.\n", "Le") == 0u);
+  assert(nb_messages_lus("Titre: Contes\nAuteur: Perrault\n\nIl etait.\n", "Titre") == 0u);
+}
+
+static void test_iterateur_grand_courrier(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *chemin = chemin_dans(repertoire, "boite.mbox");
+  char *contenu = malloc(3u * MAIL_TAILLE_DETECTION + 256u);
+  iterateur_mots_t *it;
+  size_t nb_mots = 0u;
+  size_t i;
+
+  /* un courrier plus grand que la fenetre de detection est lu en entier */
+  assert(contenu != NULL);
+  strcpy(contenu, "From: a\nTo: b\n\n");
+  for (i = 0u; strlen(contenu) < 3u * MAIL_TAILLE_DETECTION; i++) {
+    strcat(contenu, "mot ");
+  }
+  strcat(contenu, "fin.\n");
+  ecrire_fichier(chemin, contenu);
+  it = iterateur_mots_creer(chemin);
+  assert(it != NULL && iterateur_mots_nb_messages(it) == 1u);
+  while (iterateur_mots_suivant(it, NULL) != NULL) {
+    nb_mots++;
+  }
+  assert(nb_mots == i + 1u && iterateur_mots_erreur(it) == 0);
+  iterateur_mots_detruire(&it);
+  free(contenu);
+  free(chemin);
+  detruire_repertoire_temporaire(repertoire);
 }
 
 static void test_iterateur_sans_mot(void)
@@ -585,8 +767,7 @@ static void test_iterateur_tirets(void)
   verifier_marques("---Oui.", un_mot, NB(un_mot));
   /* tirets d'incise, au milieu d'une phrase */
   verifier_marques("Un jour--il pleuvait--il sortit.", incise, NB(incise));
-  verifier_marques("Oui, --dit-il, --je viens.", incise_virgule,
-                   NB(incise_virgule));
+  verifier_marques("Oui, --dit-il, --je viens.", incise_virgule, NB(incise_virgule));
   verifier_marques("mot - mot", isole, NB(isole));
   /* un '-' colle au mot qui le precede n'est pas un tiret ; ni le trait
      d'union ; ni un trait decoratif de quatre '-' ou plus */
@@ -667,6 +848,12 @@ static void test_cle(void)
   free(cle);
   cle = repertoire_cle("a");
   assert(cle != NULL && strcmp(cle, "a") == 0);
+  free(cle);
+  cle = repertoire_cle("\xC5\x81\xC3\xB3" "d\xC5\xBA");      /* polonais */
+  assert(cle != NULL && strcmp(cle, "lodz") == 0);
+  free(cle);
+  cle = repertoire_cle("\xC8\x98tiin\xC8\x9B\xC4\x83");   /* roumain */
+  assert(cle != NULL && strcmp(cle, "stiinta") == 0);
   free(cle);
   /* ce qui n'est pas un mot seul : EINVAL */
   errno = 0;
@@ -1050,7 +1237,8 @@ static void test_apprendre_ordre_2(void)
   char *repertoire = creer_repertoire_temporaire();
   hachage_t *mots = hachage_creer(0u);
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
-  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int le;
   unsigned int chat;
@@ -1089,7 +1277,8 @@ static void test_apprendre_lexique_ponctuation(void)
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
   lexique_t *lexique = lexique_creer();
   markov_t *ponctuation = markov_creer(5u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int oui;
   unsigned int non;
@@ -1135,7 +1324,8 @@ static void test_apprendre_recursif(void)
   char *repertoire = creer_repertoire_temporaire();
   char *sous = chemin_dans(repertoire, "sous");
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, true, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, true, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   markov_t *m;
 
   assert(mkdir(sous, 0700) == 0);
@@ -1238,8 +1428,9 @@ static void test_apprendre_corpus(void)
   char *fichier = chemin_dans(ailleurs, "lettre.txt");
   const char *chemins[2];
   hachage_t *mots = hachage_creer(0u);
-  repertoire_bilan_t bilan = { 9u, 9u, 9u, 9u, 9u, LANGUE_FRANCAIS };
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_bilan_t bilan = { 9u, 9u, 9u, 9u, 9u, 9u, LANGUE_FRANCAIS };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
   markov_t *m;
 
   options.bilan = &bilan;
@@ -1252,7 +1443,7 @@ static void test_apprendre_corpus(void)
   assert(hachage_nb_mots(mots) == 5u);       /* "" cher ami viens vite */
   assert(markov_poids(m, id(mots, "cher"), id(mots, "ami")) == 1u);
   assert(bilan.nb_fichiers == 1u && bilan.nb_phrases == 2u);
-  assert(bilan.nb_mots == 4u);
+  assert(bilan.nb_mots == 4u && bilan.nb_messages == 0u);
   assert(bilan.nb_phrases_ecartees == 0u && bilan.nb_mots_ecartes == 0u);
   assert(bilan.langue == LANGUE_INCONNUE);   /* pas de filtre */
   markov_detruire(&m);
@@ -1306,7 +1497,8 @@ static void test_apprendre_ordre_3(void)
   char *repertoire = creer_repertoire_temporaire();
   hachage_t *mots = hachage_creer(0u);
   hachage_nuplets_t *nuplets = hachage_nuplets_creer(3u, 0u);
-  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int le;
   unsigned int chat;
@@ -1353,7 +1545,8 @@ static void test_apprendre_tous_les_ordres(void)
   hachage_t *mots;
   hachage_paires_t *bigrammes;
   hachage_nuplets_t *nuplets;
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int ordre;
   unsigned int etat;
@@ -1397,6 +1590,192 @@ static void test_apprendre_tous_les_ordres(void)
   detruire_repertoire_temporaire(repertoire);
 }
 
+/** Les deux chaines (finalisees) ont exactement les memes transitions. */
+static void verifier_chaines_egales(const markov_t *a, const markov_t *b)
+{
+  unsigned int e;
+  unsigned int r;
+  unsigned int poids_a;
+  unsigned int poids_b;
+
+  assert(markov_nb_etats(a) == markov_nb_etats(b));
+  for (e = 0u; e < markov_nb_etats(a); e++) {
+    assert(markov_nb_voisins(a, e) == markov_nb_voisins(b, e));
+    for (r = 0u; r < markov_nb_voisins(a, e); r++) {
+      assert(markov_voisin(a, e, r, &poids_a) == markov_voisin(b, e, r, &poids_b));
+      assert(poids_a == poids_b);
+    }
+  }
+}
+
+/**
+ * Apprend un corpus a l'ordre donne, avec un repli eventuel ; renvoie la
+ * chaine principale et, si ordre_repli >= 1, la chaine de repli dans
+ * *repli. Les tables sont detruites.
+ */
+static markov_t *apprendre_niveaux(const char *repertoire, unsigned int ordre,
+                                   unsigned int ordre_repli, markov_t **repli)
+{
+  hachage_t *mots = hachage_creer(0u);
+  hachage_paires_t *bigrammes = hachage_paires_creer(0u);
+  hachage_nuplets_t *nuplets = NULL;
+  hachage_nuplets_t *nuplets_repli = NULL;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
+  markov_t *m;
+
+  if (ordre >= 3u) {
+    nuplets = hachage_nuplets_creer(ordre, 0u);
+  }
+  if (ordre_repli >= 3u) {
+    nuplets_repli = hachage_nuplets_creer(ordre_repli, 0u);
+  }
+  if (ordre_repli >= 1u) {
+    *repli = markov_creer(8u);
+  }
+  options.ordre = ordre;
+  options.bigrammes = bigrammes;
+  options.nuplets = nuplets;
+  options.ordre_repli = ordre_repli;
+  options.repli = (ordre_repli >= 1u) ? *repli : NULL;
+  options.nuplets_repli = nuplets_repli;
+  m = repertoire_apprendre(repertoire, 7u, mots, &options);
+  assert(m != NULL);
+  assert(ordre_repli == 0u || (markov_est_finalisee(*repli) && markov_nb_etats(*repli) > 0u));
+  hachage_nuplets_detruire(&nuplets_repli);
+  hachage_nuplets_detruire(&nuplets);
+  hachage_paires_detruire(&bigrammes);
+  hachage_detruire(&mots);
+  return m;
+}
+
+static void test_apprendre_repli(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  markov_t *m;
+  markov_t *repli = NULL;
+  markov_t *reference;
+  markov_t *inutile = NULL;
+  unsigned int ordre;
+  unsigned int ordre_repli;
+
+  creer_fichier_dans(repertoire, "a.txt",
+                     "Le chat dort. Le chien dort. Dort. Le chat de la "
+                     "voisine dort, le chien de la maison mange.");
+  creer_fichier_dans(repertoire, "b.txt", "Un chat mange vite.");
+  /* la chaine de repli est apprise sur les memes phrases que la chaine
+     principale : c'est la chaine d'un modele de son ordre ; la chaine
+     principale est inchangee */
+  for (ordre = 2u; ordre <= REPERTOIRE_ORDRE_MAX; ordre++) {
+    for (ordre_repli = 1u; ordre_repli < ordre; ordre_repli++) {
+      m = apprendre_niveaux(repertoire, ordre, ordre_repli, &repli);
+      reference = apprendre_niveaux(repertoire, ordre_repli, 0u, &inutile);
+      verifier_chaines_egales(repli, reference);
+      markov_detruire(&reference);
+      reference = apprendre_niveaux(repertoire, ordre, 0u, &inutile);
+      verifier_chaines_egales(m, reference);
+      markov_detruire(&reference);
+      markov_detruire(&repli);
+      markov_detruire(&m);
+    }
+  }
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_contextes(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  char *sans_accent = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  hachage_paires_t *bigrammes = hachage_paires_creer(0u);
+  lexique_t *lexique = lexique_creer();
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
+  markov_t *m;
+  unsigned int est_la;
+  unsigned int rang;
+  unsigned int mot_avant;
+  unsigned int bigramme;
+  unsigned int nb_exceptions = 0u;
+
+  options.bigrammes = bigrammes;
+  options.lexique = lexique;
+  creer_fichier_dans(repertoire, "a.txt",
+                     "Qui est l\xC3\xA0 ? Elle est la reine. Il est l\xC3\xA0.");
+  m = repertoire_apprendre(repertoire, 1u, mots, &options);
+  assert(m != NULL);
+  /* contextes (t, (u, v)) de "qui est la", "elle est la reine", "il est
+     la" : (0, (qui, est)), (qui, (est, la)), (0, (elle, est)), (elle, (est,
+     la)), (est, (la, reine)), (0, (il, est)), (il, (est, la)) */
+  assert(lexique_nb_contextes(lexique) == 7u);
+  est_la = hachage_paires_identifiant(bigrammes, id(mots, "est"), id(mots, "la"));
+  /* le bigramme (est, la) choisit l'accent grave (2 voix sur 3) ; seul le
+     contexte (elle, (est, la)) est une exception */
+  assert(strcmp(lexique_variante(lexique, id(mots, "la"), lexique_variante_bigramme(lexique, est_la)),
+                "l\xC3\xA0") == 0);
+  for (rang = 0u; rang < lexique_nb_contextes(lexique); rang++) {
+    if (lexique_contexte(lexique, rang, &mot_avant, &bigramme) != LEXIQUE_AUCUNE) {
+      nb_exceptions++;
+      assert(mot_avant == id(mots, "elle") && bigramme == est_la);
+    }
+  }
+  assert(nb_exceptions == 1u);
+  assert(strcmp(lexique_variante(lexique, id(mots, "la"),
+                                 lexique_variante_contexte(lexique, id(mots, "elle"), est_la)),
+                "la") == 0);
+  markov_detruire(&m);
+  lexique_detruire(&lexique);
+  hachage_paires_detruire(&bigrammes);
+  hachage_detruire(&mots);
+  /* un fichier sans accent ne renseigne pas sur les accents : aucun contexte */
+  mots = hachage_creer(0u);
+  bigrammes = hachage_paires_creer(0u);
+  lexique = lexique_creer();
+  options.bigrammes = bigrammes;
+  options.lexique = lexique;
+  creer_fichier_dans(sans_accent, "a.txt", "Qui est la ? Elle est la reine. Il est la.");
+  m = repertoire_apprendre(sans_accent, 1u, mots, &options);
+  assert(m != NULL && lexique_nb_contextes(lexique) == 0u);
+  markov_detruire(&m);
+  lexique_detruire(&lexique);
+  hachage_paires_detruire(&bigrammes);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(sans_accent);
+  detruire_repertoire_temporaire(repertoire);
+}
+
+static void test_apprendre_courriers(void)
+{
+  char *repertoire = creer_repertoire_temporaire();
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_bilan_t bilan;
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
+  markov_t *m;
+
+  options.bilan = &bilan;
+  creer_fichier_dans(repertoire, "a.mbox",
+                     "From jean@example.com Mon Mar  3 10:00:00 2024\n"
+                     "From: Jean\nTo: Paul\nSubject: Chat\n\n"
+                     "Le chat dort.\n-- \nJean\n\n"
+                     "From paul@example.com Mon Mar  3 11:00:00 2024\n"
+                     "From: Paul\nTo: Jean\nReceived: from mx\n\n"
+                     "Le chien dort.\n> Le chat dort.\n");
+  creer_fichier_dans(repertoire, "b.txt", "Le rat dort.");
+  m = repertoire_apprendre(repertoire, 1u, mots, &options);
+  assert(m != NULL);
+  /* deux fichiers, deux messages ; ni en-tetes, ni citation, ni signature */
+  assert(bilan.nb_fichiers == 2u && bilan.nb_messages == 2u);
+  assert(bilan.nb_phrases == 3u && bilan.nb_mots == 9u);
+  assert(hachage_nb_mots(mots) == 6u);       /* "" le chat dort chien rat */
+  assert(hachage_identifiant(mots, "subject") == HACHAGE_ABSENT);
+  assert(hachage_identifiant(mots, "jean") == HACHAGE_ABSENT);
+  assert(markov_poids(m, id(mots, "chat"), id(mots, "dort")) == 1u);
+  markov_detruire(&m);
+  hachage_detruire(&mots);
+  detruire_repertoire_temporaire(repertoire);
+}
+
 static void test_apprendre_marques(void)
 {
   /* le lexique retient les tirets et les guillemets majoritaires */
@@ -1404,7 +1783,8 @@ static void test_apprendre_marques(void)
   hachage_t *mots = hachage_creer(0u);
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
   lexique_t *lexique = lexique_creer();
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int b;
 
@@ -1451,7 +1831,8 @@ static void test_apprendre_phrase_par_ligne(void)
   hachage_t *mots = hachage_creer(0u);
   markov_t *ponctuation = markov_creer(5u);
   repertoire_bilan_t bilan;
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, true, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, true,
+                                   false, NULL, 0u, NULL, NULL };
   markov_t *m;
   unsigned int vers;
   unsigned int autre;
@@ -1503,7 +1884,8 @@ static void test_apprendre_filtre_langue(void)
   hachage_t *temoin;
   repertoire_bilan_t bilan;
   repertoire_bilan_t bilan_anglais;
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, true, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   true, NULL, 0u, NULL, NULL };
   markov_t *m;
   markov_t *m_temoin;
   unsigned int etats_francais;
@@ -1589,7 +1971,8 @@ static void test_apprendre_filtre_langue_inconnue(void)
   char *repertoire = creer_repertoire_temporaire();
   hachage_t *mots = hachage_creer(0u);
   repertoire_bilan_t bilan;
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, true, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false,
+                                   true, NULL, 0u, NULL, NULL };
   markov_t *m;
 
   options.bilan = &bilan;
@@ -1641,16 +2024,96 @@ static void violation_ordre_3_sans_nuplets(void)
 {
   hachage_t *mots = hachage_creer(0u);
   hachage_paires_t *bigrammes = hachage_paires_creer(0u);
-  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.bigrammes = bigrammes;
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_repli_pas_inferieur(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 2u, NULL, NULL };
+
+  options.bigrammes = hachage_paires_creer(0u);
+  options.repli = markov_creer(1u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_repli_sans_chaine(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 1u, NULL, NULL };
+
+  options.bigrammes = hachage_paires_creer(0u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_chaine_de_repli_en_trop(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
+
+  options.bigrammes = hachage_paires_creer(0u);
+  options.repli = markov_creer(1u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_repli_2_sans_bigrammes(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 2u, NULL, NULL };
+
+  options.nuplets = hachage_nuplets_creer(3u, 0u);
+  options.repli = markov_creer(1u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_repli_3_sans_nuplets(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 4u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 3u, NULL, NULL };
+
+  options.nuplets = hachage_nuplets_creer(4u, 0u);
+  options.repli = markov_creer(1u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_nuplets_de_repli_de_mauvaise_taille(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 5u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 3u, NULL, NULL };
+
+  options.nuplets = hachage_nuplets_creer(5u, 0u);
+  options.repli = markov_creer(1u);
+  options.nuplets_repli = hachage_nuplets_creer(4u, 0u);
+  repertoire_apprendre("/tmp", 1u, mots, &options);
+}
+
+static void violation_chaine_de_repli_finalisee(void)
+{
+  hachage_t *mots = hachage_creer(0u);
+  repertoire_options_t options = { 2u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 1u, NULL, NULL };
+
+  options.bigrammes = hachage_paires_creer(0u);
+  options.repli = markov_creer(1u);
+  markov_finaliser(options.repli);
   repertoire_apprendre("/tmp", 1u, mots, &options);
 }
 
 static void violation_ordre_nul(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 0u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 0u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   repertoire_apprendre("/tmp", 1u, mots, &options);
 }
@@ -1659,7 +2122,7 @@ static void violation_ordre_trop_grand(void)
 {
   hachage_t *mots = hachage_creer(0u);
   repertoire_options_t options = { REPERTOIRE_ORDRE_MAX + 1u, false, NULL, NULL, NULL, NULL,
-                                   false, false, NULL };
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.nuplets = hachage_nuplets_creer(REPERTOIRE_ORDRE_MAX + 1u, 0u);
   repertoire_apprendre("/tmp", 1u, mots, &options);
@@ -1668,7 +2131,8 @@ static void violation_ordre_trop_grand(void)
 static void violation_nuplets_de_mauvaise_taille(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 4u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 4u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.nuplets = hachage_nuplets_creer(3u, 0u);
   repertoire_apprendre("/tmp", 1u, mots, &options);
@@ -1677,7 +2141,8 @@ static void violation_nuplets_de_mauvaise_taille(void)
 static void violation_nuplets_a_l_ordre_1(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.nuplets = hachage_nuplets_creer(1u, 0u);
   repertoire_apprendre("/tmp", 1u, mots, &options);
@@ -1686,7 +2151,8 @@ static void violation_nuplets_a_l_ordre_1(void)
 static void violation_nuplets_non_vides(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 3u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   const unsigned int elements[3] = { 0u, 0u, 0u };
 
   options.nuplets = hachage_nuplets_creer(3u, 0u);
@@ -1697,7 +2163,8 @@ static void violation_nuplets_non_vides(void)
 static void violation_corpus_sans_chemin(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   const char *chemins[1] = { "/tmp" };
 
   repertoire_apprendre_corpus(chemins, 0u, 1u, mots, &options);
@@ -1706,7 +2173,8 @@ static void violation_corpus_sans_chemin(void)
 static void violation_corpus_chemin_nul(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
   const char *chemins[2] = { "/tmp", NULL };
 
   repertoire_apprendre_corpus(chemins, 2u, 1u, mots, &options);
@@ -1742,7 +2210,8 @@ static void violation_cle_nulle(void)
 static void violation_lexique_sans_bigrammes(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.lexique = lexique_creer();
   repertoire_apprendre("/tmp", 1u, mots, &options);
@@ -1751,7 +2220,8 @@ static void violation_lexique_sans_bigrammes(void)
 static void violation_ponctuation_non_vide(void)
 {
   hachage_t *mots = hachage_creer(0u);
-  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL, false, false, NULL };
+  repertoire_options_t options = { 1u, false, NULL, NULL, NULL, NULL,
+                                   false, false, NULL, 0u, NULL, NULL };
 
   options.ponctuation = markov_creer(1u);
   markov_ajouter_etat(options.ponctuation);
@@ -1827,6 +2297,13 @@ static void test_contrats(void)
   assert(viole_contrat(violation_options_nulles));
   assert(viole_contrat(violation_ordre_3_sans_nuplets));
   assert(viole_contrat(violation_ordre_nul));
+  assert(viole_contrat(violation_repli_pas_inferieur));
+  assert(viole_contrat(violation_repli_sans_chaine));
+  assert(viole_contrat(violation_chaine_de_repli_en_trop));
+  assert(viole_contrat(violation_repli_2_sans_bigrammes));
+  assert(viole_contrat(violation_repli_3_sans_nuplets));
+  assert(viole_contrat(violation_nuplets_de_repli_de_mauvaise_taille));
+  assert(viole_contrat(violation_chaine_de_repli_finalisee));
   assert(viole_contrat(violation_ordre_trop_grand));
   assert(viole_contrat(violation_nuplets_de_mauvaise_taille));
   assert(viole_contrat(violation_nuplets_a_l_ordre_1));
@@ -1858,6 +2335,8 @@ int main(void)
   LANCER_TEST(test_iterateur_abreviations);
   LANCER_TEST(test_iterateur_nombres);
   LANCER_TEST(test_iterateur_points_de_suspension);
+  LANCER_TEST(test_iterateur_courrier);
+  LANCER_TEST(test_iterateur_grand_courrier);
   LANCER_TEST(test_iterateur_sans_mot);
   LANCER_TEST(test_iterateur_graphies);
   LANCER_TEST(test_iterateur_graphie_latin1);
@@ -1869,6 +2348,9 @@ int main(void)
   LANCER_TEST(test_iterateur_fichier_inexistant);
   LANCER_TEST(test_iterateur_repertoire);
   LANCER_TEST(test_iterateur_detruire_en_cours);
+  LANCER_TEST(test_iterateur_ponctuation_interne);
+  LANCER_TEST(test_iterateur_parentheses);
+  LANCER_TEST(test_iterateur_lettres_etendues);
   LANCER_TEST(test_iterateur_guillemets);
   LANCER_TEST(test_iterateur_tirets);
   LANCER_TEST(test_iterateur_phrase_par_ligne);
@@ -1890,6 +2372,9 @@ int main(void)
   LANCER_TEST(test_apprendre_corpus);
   LANCER_TEST(test_apprendre_ordre_3);
   LANCER_TEST(test_apprendre_tous_les_ordres);
+  LANCER_TEST(test_apprendre_repli);
+  LANCER_TEST(test_apprendre_courriers);
+  LANCER_TEST(test_apprendre_contextes);
   LANCER_TEST(test_apprendre_marques);
   LANCER_TEST(test_apprendre_phrase_par_ligne);
   LANCER_TEST(test_apprendre_filtre_langue);
